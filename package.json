@@ -1,0 +1,46 @@
+{
+  "name": "opencommerce",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source commerce integration infrastructure. One catalogue, every marketplace.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/misiki-in/opencommerce.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "bun --bun vite dev",
+    "start": "bun ./build/index.js",
+    "seed": "bun src/seed.ts",
+    "reset": "bun src/reset.ts",
+    "test": "bun src/selftest.ts",
+    "bench": "bun src/bench.ts",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-check --tsconfig ./tsconfig.json && bun src/selftest.ts",
+    "logos": "bun src/logos.ts",
+    "mcp": "bun src/mcp.ts",
+    "build": "bun --bun vite build",
+    "preview": "bun --bun vite preview"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "devDependencies": {
+    "@lucide/svelte": "^1.34.0",
+    "@sveltejs/adapter-node": "^5.5.7",
+    "@sveltejs/kit": "^2.70.3",
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/bun": "^1.4.0",
+    "bits-ui": "^2.19.0",
+    "clsx": "^2.1.1",
+    "svelte": "^5.56.10",
+    "svelte-check": "^4.7.6",
+    "tailwind-merge": "^3.6.0",
+    "tailwind-variants": "^3.3.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "7.0.2",
+    "vite": "^8.2.2"
+  }
+}

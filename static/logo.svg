@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="OpenCommerce">
+  <title>OpenCommerce</title>
+
+  <!--
+    A peacock, because the tail is the product: one body, many blades, each
+    tipped with the same eye-spot. The fan is the fan-out.
+
+    Two things keep it legible at 26px, where this mark actually lives:
+
+    Blades graduate across a wide value range (20% -> 55% lightness) rather
+    than sitting in one green. An earlier pass used near-identical greens for
+    all five and they fused into a single silhouette — a leaf, not a fan. Hue
+    contrast is what the original rainbow was buying; value contrast buys the
+    same separation without five unrelated colours.
+
+    The body and head are bright enough to hold their own against a dark
+    ground. When they were not, the bird vanished and only the fan survived,
+    which is the other half of why it read as a leaf.
+  -->
+  <g>
+    <g transform="rotate(-54 32 52)">
+      <ellipse cx="32" cy="27" rx="5.2" ry="18" fill="#14524A"/>
+      <circle cx="32" cy="15" r="3.7" fill="#E0A32E"/>
+      <circle cx="32" cy="15" r="1.6" fill="#0B2E29"/>
+    </g>
+    <g transform="rotate(-27 32 52)">
+      <ellipse cx="32" cy="25" rx="5.2" ry="19" fill="#2E9280"/>
+      <circle cx="32" cy="13" r="3.7" fill="#E0A32E"/>
+      <circle cx="32" cy="13" r="1.6" fill="#0B2E29"/>
+    </g>
+    <g>
+      <ellipse cx="32" cy="24" rx="5.2" ry="20" fill="#43C0A6"/>
+      <circle cx="32" cy="11" r="3.7" fill="#E0A32E"/>
+      <circle cx="32" cy="11" r="1.6" fill="#0B2E29"/>
+    </g>
+    <g transform="rotate(27 32 52)">
+      <ellipse cx="32" cy="25" rx="5.2" ry="19" fill="#2E9280"/>
+      <circle cx="32" cy="13" r="3.7" fill="#E0A32E"/>
+      <circle cx="32" cy="13" r="1.6" fill="#0B2E29"/>
+    </g>
+    <g transform="rotate(54 32 52)">
+      <ellipse cx="32" cy="27" rx="5.2" ry="18" fill="#14524A"/>
+      <circle cx="32" cy="15" r="3.7" fill="#E0A32E"/>
+      <circle cx="32" cy="15" r="1.6" fill="#0B2E29"/>
+    </g>
+  </g>
+
+  <!-- Body, neck and crest. -->
+  <ellipse cx="32" cy="50" rx="7.5" ry="9.5" fill="#3AA893"/>
+  <path d="M32 44c-2.6 0-4.6-1.4-4.6-3.6S29.4 36 32 36s4.6 2.2 4.6 4.4S34.6 44 32 44z" fill="#3A8FCC"/>
+  <circle cx="32" cy="38.5" r="4.6" fill="#3A8FCC"/>
+  <circle cx="30.4" cy="37.6" r="1.05" fill="#F4F8F6"/>
+  <path d="M36.4 38.9l3.4 1.2-3.4 1.2z" fill="#E0A32E"/>
+
+  <!-- Three-feather crest. -->
+  <circle cx="32" cy="31.4" r="1.25" fill="#E0A32E"/>
+  <circle cx="28.6" cy="32.4" r="1.05" fill="#E0A32E"/>
+  <circle cx="35.4" cy="32.4" r="1.05" fill="#E0A32E"/>
+  <path d="M32 33.9v-1.6M29.1 34.4l-.4-1.1M34.9 34.4l.4-1.1" stroke="#E0A32E" stroke-width="0.8" stroke-linecap="round"/>
+</svg>
