@@ -12,7 +12,7 @@
    * install block, and those two disagreeing is the kind of thing nobody
    * notices until someone copies a command that does not work.
    */
-  const REPO = "https://github.com/misiki-in/opencommerce";
+  const REPO = "https://github.com/misiki-in/kitcommerce";
 
   /**
    * Everything the footer points at.

@@ -23,10 +23,19 @@
  * here. Until then a channel with no `locations` configured behaves like any
  * other connector and pushes one number.
  *
- * ALL THREE APIs ARE PARTNER-GATED. The transports below follow the shape of
- * their published seller/partner documentation, but none can be verified
- * without an onboarded account. Mock mode is fully functional; treat live mode
- * as unverified and expect to correct field names in this one file.
+ * NONE OF THE THREE HAS A PUBLIC SELLER API. Verified 2026-08-27: the REST
+ * endpoints sketched below were live-probed and return 404 (Zepto, Blinkit) or
+ * an HTML portal shell (Instamart), and even enterprise enablers (Unicommerce,
+ * Base, Vinculum) integrate via PO-email parsing or platform-side vendor-ID
+ * whitelisting rather than seller-held API keys. The real merchant
+ * relationship is purchase-order based: the platform sends the brand POs to
+ * replenish its dark stores, inwarding is appointment-based, and end-customer
+ * PII never reaches the seller — so the retail-order shape in listOrders is
+ * aspirational, and a real live mapping will model POs (SKU lines, destination
+ * facility, appointment window, expiry) instead. The transports are kept
+ * deliberately as the declared seam for the day a marketplace integration team
+ * provisions access: correcting them then touches only this file. Until that
+ * happens live mode stays off; mock mode is fully functional.
  */
 import {
   ConnectorError,
@@ -50,6 +59,16 @@ interface QuickCommerceSpec {
   displayName: string;
   baseUrl: string;
   docsUrl: string;
+  /** When the registration page and the merchant portal differ (Instamart). */
+  sellerPortalUrl?: string;
+  setupGuide: string;
+  /**
+   * All three platforms issue credentials by hand (category managers,
+   * integration teams, vendor-ID whitelisting), so every spec must tell the
+   * seller what actually exists instead of letting the connect dialog imply
+   * self-serve keys.
+   */
+  credentialsNote: string;
   idPrefix: string;
   group?: string;
   status?: "ready" | "development";
@@ -146,14 +165,34 @@ function makeConnector(spec: QuickCommerceSpec): MarketplaceConnector {
     requiredFields: [...SHARED_REQUIRED, ...(spec.extraRequired ?? [])],
     rateLimits: spec.rateLimits,
     docsUrl: spec.docsUrl,
-    sellerPortalUrl: spec.docsUrl,
+    setupGuide: spec.setupGuide,
+    sellerPortalUrl: spec.sellerPortalUrl ?? spec.docsUrl,
+    credentialsNote: spec.credentialsNote,
   };
 
+  /**
+   * The connect form renders `optional` auth fields as skippable inputs and
+   * the setup guides tell sellers to leave them empty, so the credential gate
+   * mirrors the manifest: only a field the manifest marks non-optional
+   * (seller_id / partner_id / vendor_id) may block a call. The authHeaders
+   * specs still emit a header per field — empty-valued when an optional key is
+   * absent — and those empty headers are dropped before fetching, because
+   * sending `Authorization: ""` would make the request fail on auth instead of
+   * reaching the endpoint and returning the honest 404/HTML answer the guides'
+   * Verify step documents.
+   */
   async function call(ctx: ConnectorContext, path: string, init: RequestInit = {}): Promise<any> {
-    const headers = spec.authHeaders(ctx.credentials);
-    if (Object.values(headers).some((v) => !v)) {
-      throw new ConnectorError(`missing ${spec.displayName} credentials`, "AUTHENTICATION");
+    for (const field of manifest.authentication.fields) {
+      if (!field.optional && !ctx.credentials[field.key]) {
+        throw new ConnectorError(
+          `missing ${spec.displayName} credential: ${field.label}`,
+          "AUTHENTICATION",
+        );
+      }
     }
+    const headers = Object.fromEntries(
+      Object.entries(spec.authHeaders(ctx.credentials)).filter(([, v]) => v),
+    );
     const res = await fetch(`${spec.baseUrl}${path}`, {
       ...init,
       headers: { ...headers, "Content-Type": "application/json", ...(init.headers ?? {}) },
@@ -166,7 +205,20 @@ function makeConnector(spec: QuickCommerceSpec): MarketplaceConnector {
     }
     if (!res.ok) throw classifyStatus(res.status, await res.text());
     const text = await res.text();
-    return text ? JSON.parse(text) : null;
+    if (!text) return null;
+    // These hosts front web portals: a wrong path can answer 200 with an SPA
+    // HTML shell instead of an error status (observed live on the Instamart
+    // portal, which redirects every sub-path to its login page). JSON.parse on
+    // that would throw a raw SyntaxError outside the error taxonomy, so refuse
+    // non-JSON bodies with a classified, non-retryable error instead.
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.includes("json")) {
+      throw new ConnectorError(
+        `${spec.displayName} returned ${contentType || "an untyped body"} instead of JSON — this endpoint is not a live API`,
+        "UNKNOWN",
+      );
+    }
+    return JSON.parse(text);
   }
 
   function toListing(ctx: ConnectorContext, p: CanonicalProduct) {
@@ -358,16 +410,43 @@ export const zepto = makeConnector({
   name: "zepto",
   displayName: "Zepto",
   baseUrl: "https://api.zepto.co.in/seller",
+  // brands.zepto.co.in ("Zepto - Partners") is the real brand entry portal;
+  // there is no separate developer documentation site to link.
   docsUrl: "https://brands.zepto.co.in",
+  setupGuide: "https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/zepto.md",
+  credentialsNote:
+    "Zepto onboarding is curated by category managers and there is no self-serve API key. Enter the vendor/brand code Zepto assigned you as Seller ID; leave API Key empty unless Zepto's integration team has provisioned one for you.",
   idPrefix: "ZPT",
   authFields: {
     type: "api_key",
     fields: [
-      { key: "seller_id", label: "Seller ID", secret: false },
-      { key: "api_key", label: "API Key", secret: true },
+      {
+        key: "seller_id",
+        label: "Seller ID",
+        secret: false,
+        help: "The vendor/brand code Zepto assigns during onboarding — it appears on your purchase orders; ask your category manager",
+      },
+      {
+        key: "api_key",
+        label: "API Key",
+        secret: true,
+        optional: true,
+        help: "No self-serve issuance exists; only fill this if Zepto's integration team provisioned a key",
+      },
     ],
   },
-  authHeaders: (c) => ({ "X-Seller-Id": c.seller_id ?? "", Authorization: `Bearer ${c.api_key ?? ""}` }),
+  authHeaders: (c) => ({
+    "X-Seller-Id": c.seller_id ?? "",
+    Authorization: c.api_key ? `Bearer ${c.api_key}` : "",
+  }),
+  extraRequired: [
+    {
+      path: "attributes.fssai_licence",
+      label: "FSSAI licence number",
+      required: true,
+      help: "Mandatory for food, beverage, dairy and grocery listings",
+    },
+  ],
   rateLimits: { requestsPerSecond: 3, burst: 6 },
   mockCustomer: { name: "Aditi Nair", phone: "+91-9600000001", city: "Bengaluru", state: "Karnataka", postalCode: "560095" },
 });
@@ -376,19 +455,51 @@ export const instamart = makeConnector({
   name: "instamart",
   displayName: "Swiggy Instamart",
   baseUrl: "https://partner.swiggy.com/instamart",
-  docsUrl: "https://partner.swiggy.com",
+  // partner.swiggy.com on its own is Swiggy's RESTAURANT partner surface. The
+  // Instamart brand surfaces are swiggy.com/instamart-partner (registration)
+  // and partner.instamart.in (the Brand Portal partner.swiggy.com/instamart
+  // redirects to) — linking the bare restaurant portal sends sellers to the
+  // wrong business line entirely.
+  docsUrl: "https://www.swiggy.com/instamart-partner",
+  sellerPortalUrl: "https://partner.instamart.in",
+  setupGuide: "https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/instamart.md",
+  credentialsNote:
+    "Swiggy Instamart has no self-serve developer program — brands are onboarded through category managers. Enter the Swiggy-assigned code from your purchase orders or Brand Portal as Partner ID; Client ID and Secret exist only if Swiggy's integration team has provisioned them for you.",
   idPrefix: "SIM",
+  // Labelled api_key because that is what the transport does: static headers,
+  // no token exchange. The oauth2_client_credentials label this previously
+  // carried promised a flow that neither the code nor any Swiggy doc provides.
   authFields: {
-    type: "oauth2_client_credentials",
+    type: "api_key",
     fields: [
-      { key: "partner_id", label: "Partner ID", secret: false },
-      { key: "client_id", label: "Client ID", secret: false },
-      { key: "client_secret", label: "Client Secret", secret: true },
+      {
+        key: "partner_id",
+        label: "Partner ID",
+        secret: false,
+        help: "The vendor/brand code Swiggy assigns during onboarding — visible on purchase orders and in the Brand Portal",
+      },
+      {
+        key: "client_id",
+        label: "Client ID",
+        secret: false,
+        optional: true,
+        help: "No self-serve issuance exists; only fill this if Swiggy's integration team provisioned credentials",
+      },
+      {
+        key: "client_secret",
+        label: "Client Secret",
+        secret: true,
+        optional: true,
+        help: "Issued together with the Client ID, or not at all",
+      },
     ],
   },
   authHeaders: (c) => ({
     "X-Partner-Id": c.partner_id ?? "",
-    Authorization: `Basic ${Buffer.from(`${c.client_id ?? ""}:${c.client_secret ?? ""}`).toString("base64")}`,
+    Authorization:
+      c.client_id && c.client_secret
+        ? `Basic ${Buffer.from(`${c.client_id}:${c.client_secret}`).toString("base64")}`
+        : "",
   }),
   extraRequired: [
     {
@@ -406,14 +517,38 @@ export const blinkit = makeConnector({
   name: "blinkit",
   displayName: "Blinkit",
   baseUrl: "https://api.blinkit.com/seller",
-  docsUrl: "https://blinkit.com/partner",
+  // seller.blinkit.com is the Seller Hub where brands register and operate.
+  // Do NOT link blinkit.com/partner or partners.blinkit.com here: that is the
+  // dark-store FRANCHISE program (a Rs 7-10 lakh investment to run a
+  // micro-warehouse), a completely different relationship from selling stock.
+  docsUrl: "https://seller.blinkit.com",
+  setupGuide: "https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/blinkit.md",
+  credentialsNote:
+    "Blinkit issues no API keys to sellers — integrations work by Blinkit whitelisting your Vendor ID for a named platform, arranged through your Blinkit point of contact. Enter the Vendor ID from your Seller Hub account; leave key and secret empty unless Blinkit's integration team has provisioned them.",
   idPrefix: "BLK",
   authFields: {
     type: "api_key",
     fields: [
-      { key: "vendor_id", label: "Vendor ID", secret: false },
-      { key: "api_key", label: "API Key", secret: true },
-      { key: "api_secret", label: "API Secret", secret: true },
+      {
+        key: "vendor_id",
+        label: "Vendor ID",
+        secret: false,
+        help: "The vendor code Blinkit assigns at onboarding — visible in the Seller Hub and printed on purchase orders",
+      },
+      {
+        key: "api_key",
+        label: "API Key",
+        secret: true,
+        optional: true,
+        help: "Blinkit does not issue seller API keys; only fill this if their integration team provisioned one",
+      },
+      {
+        key: "api_secret",
+        label: "API Secret",
+        secret: true,
+        optional: true,
+        help: "Issued together with the API Key, or not at all",
+      },
     ],
   },
   authHeaders: (c) => ({

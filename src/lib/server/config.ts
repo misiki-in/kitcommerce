@@ -122,6 +122,12 @@ export const config = {
   oauth: {
     etsy: {
       clientId: process.env.ETSY_CLIENT_ID ?? "",
+      /**
+       * Sits next to the keystring on the app page. Etsy's x-api-key header is
+       * "keystring:shared_secret", so without this the exchanged credentials
+       * only work if the seller pastes the combined form by hand.
+       */
+      sharedSecret: process.env.ETSY_SHARED_SECRET ?? "",
       // Read and write listings, read sales. Deliberately no listings_d: this
       // system never deletes a seller's listings, so it should not hold the
       // permission to.

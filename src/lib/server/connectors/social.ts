@@ -1,40 +1,34 @@
 /**
- * Social commerce connectors: Instagram, Facebook, TikTok.
+ * Meta social commerce connectors: Instagram and Facebook.
  *
- * These are not marketplaces and the code should not pretend they are. Three
- * differences drive everything in this file:
+ * These are not marketplaces and the code should not pretend they are. Two
+ * facts drive everything in this file:
  *
  * 1. Instagram and Facebook are two SURFACES OVER ONE CATALOGUE. Both read from
  *    the same Meta Product Catalog via the Graph API, so publishing to both is
  *    two channels writing the same catalog_id. They are separate connectors
  *    because a seller genuinely chooses them separately — and because their
- *    credentials, once scoped, can differ — but the transport is shared.
+ *    credentials, once scoped, can differ — but the transport is shared. Which
+ *    surface actually shows the catalogue is configured in Commerce Manager,
+ *    not over the API.
  *
- * 2. Native checkout is regional, so ORDERS MOSTLY DO NOT COME BACK. Meta
- *    checkout is US-only; everywhere else Instagram and Facebook shops send the
- *    buyer to your own site or to WhatsApp, and no order ever exists on Meta to
- *    import. Both therefore declare `orderImport: false`. Declaring it true and
- *    returning an empty list would be a lie the planner would faithfully act
- *    on, queueing an order-pull job forever.
+ * 2. ORDERS NEVER COME BACK. Meta removed native checkout globally between
+ *    June and August 2025; every Facebook and Instagram shop now sends the
+ *    buyer to the seller's own website (the per-product landing_url) to pay,
+ *    and no order ever exists on Meta to import. Both connectors therefore
+ *    declare `orderImport: false`. Declaring it true and returning an empty
+ *    list would be a lie the planner would faithfully act on, queueing an
+ *    order-pull job forever.
  *
- * 3. TikTok Shop does not operate in India. TikTok has been banned there since
- *    2020, so `regions` omits IN entirely. It is the one channel here a seller
- *    in India cannot use, and the manifest is the right place to say so.
+ * The live path writes `/{catalog_id}/items_batch` with PRODUCT_ITEM payloads,
+ * verified against the official Graph API v26.0 docs on 2026-08-27. Two Meta
+ * quirks matter for correctness here: throttling arrives as JSON error codes
+ * in the body (4 / 17 / 613 / 80014) rather than as HTTP 429, and items_batch
+ * is asynchronous — the POST returns job handles, and per-item rejections
+ * surface in validation_status or a later status check, not as an HTTP error.
+ * Both are handled below.
  *
- * All three are declared `status: "ready"`, which is what puts them in front of
- * a seller as something to connect rather than something being built. Meta's
- * Graph API and TikTok Shop's partner API are both documented publicly, so
- * these were written against a specification anyone can read rather than
- * against a portal nobody outside it can see.
- *
- * "Ready" covers the catalogue paths — publishing, price, availability. It does
- * not repeal the two limits above: Meta returns no orders outside its native
- * checkout, and TikTok Shop cannot be used from India at all. Both of those are
- * declared in the manifests and the planner obeys them.
- *
- * If a field name turns out to be wrong once real credentials are attached,
- * it is a correction in this one file. Mock mode is fully functional either
- * way and needs no account.
+ * TikTok Shop lives in its own connector file; this one is Meta only.
  */
 import {
   ConnectorError,
@@ -42,6 +36,7 @@ import {
   money,
   type CanonicalProduct,
   type Capabilities,
+  type CanonicalVariant,
   type ConnectorContext,
   type FieldSpec,
   type InventoryUpdate,
@@ -56,13 +51,13 @@ import { mockLatency, mockMaybeFail, mockRemoteId } from "./mock";
 /**
  * What a catalogue needs to be shoppable in a feed.
  *
- * Shorter than any marketplace's list, and deliberately so: social catalogues
- * are merchandising surfaces, not compliance surfaces. There is no HSN code
- * here because Meta and TikTok do not ask for one — the tax fields on a
- * marketplace listing exist for the marketplace's invoicing, and these
- * platforms do not invoice on your behalf outside native checkout.
+ * Shorter than any marketplace's list, and deliberately so: a social catalogue
+ * is a merchandising surface, not a compliance surface. There is no HSN code
+ * here because Meta does not ask for one — the tax fields on a marketplace
+ * listing exist for the marketplace's invoicing, and Meta does not invoice on
+ * your behalf now that checkout happens on the seller's own site.
  */
-const SOCIAL_REQUIRED: FieldSpec[] = [
+const META_REQUIRED: FieldSpec[] = [
   { path: "title", label: "Product name", required: true },
   { path: "description", label: "Description", required: true },
   { path: "brand", label: "Brand", required: true },
@@ -85,36 +80,186 @@ const SOCIAL_REQUIRED: FieldSpec[] = [
     path: "attributes.landing_url",
     label: "Product landing page",
     required: true,
-    help: "Where a tap goes. Required outside native checkout, which is most places",
+    help: "Where a tap goes. Every purchase completes on your own site, so this must work",
   },
 ];
 
-interface SocialSpec {
-  name: string;
-  displayName: string;
-  baseUrl: string;
-  docsUrl: string;
-  sellerPortalUrl: string;
-  idPrefix: string;
-  group?: string;
-  status?: "ready" | "development";
-  regions: string[];
-  capabilities: Partial<Capabilities>;
-  authFields: Manifest["authentication"];
-  authHeaders: (creds: Record<string, string>) => Record<string, string>;
-  rateLimits: Manifest["rateLimits"];
-  required?: FieldSpec[];
-  /** Catalogue container the products are written into. */
-  containerKey: string;
-  paths: { profile: string; batch: string; orders?: string };
-  /** Platform's own product payload shape. */
-  toItem: (p: CanonicalProduct, variantIndex: number) => Record<string, unknown>;
-  mockCustomer?: { name: string; city: string; state: string; postalCode: string; country: string };
-  mockCurrency?: string;
-  mockTotalCents?: number;
+/**
+ * Graph API base. The version is pinned deliberately: Meta expires each
+ * version roughly two years after release (v21.0 dies 2027-01-21), so an
+ * unpinned "latest" would shift under us while a stale pin eventually 404s.
+ * v26.0 is current as of 2026-08-27; bumping it is a one-line change here.
+ */
+const META_GRAPH = "https://graph.facebook.com/v26.0";
+
+/**
+ * Throttling on the Graph API does not look like throttling. Instead of HTTP
+ * 429 with Retry-After, Meta returns an ordinary error status whose JSON body
+ * carries a rate-limit error code: 4 (app-level), 17 (user-level), 613
+ * (custom throttle), 80014 (catalogue-batch business use case). Treating
+ * those as their HTTP status would classify them VALIDATION and dead-letter
+ * jobs that only needed to wait.
+ */
+const META_THROTTLE_CODES = new Set([4, 17, 613, 80014]);
+const META_THROTTLE_FALLBACK_MS = 15 * 60_000;
+
+/**
+ * Best available retry hint for a throttled response. The
+ * X-Business-Use-Case-Usage header is JSON keyed by business id, each entry
+ * optionally carrying estimated_time_to_regain_access in MINUTES; when Meta
+ * does not say, fifteen minutes is a conservative floor for a per-minute
+ * catalogue budget that has just been exhausted.
+ */
+function metaRetryAfterMs(res: Response): number {
+  try {
+    const raw = res.headers.get("x-business-use-case-usage");
+    if (raw) {
+      let minutes = 0;
+      for (const entries of Object.values(JSON.parse(raw) as Record<string, unknown>)) {
+        for (const e of Array.isArray(entries) ? entries : []) {
+          const m = Number((e as any)?.estimated_time_to_regain_access);
+          if (Number.isFinite(m) && m > minutes) minutes = m;
+        }
+      }
+      if (minutes > 0) return minutes * 60_000;
+    }
+  } catch {
+    // A malformed usage header is Meta's bug, not a reason to fail the
+    // classification — fall through to the fixed backoff.
+  }
+  return META_THROTTLE_FALLBACK_MS;
 }
 
-const BASE_CAPABILITIES: Capabilities = {
+const metaAuth: Manifest["authentication"] = {
+  type: "oauth2_access_token",
+  fields: [
+    { key: "catalog_id", label: "Catalog ID", secret: false },
+    {
+      key: "business_id",
+      label: "Business ID",
+      secret: false,
+      // Catalogue calls address /{catalog_id}/... directly and never send the
+      // business id, so it is informational — kept because it identifies the
+      // portfolio the token belongs to, optional because nothing breaks
+      // without it.
+      optional: true,
+      help: "Business Settings → Business info. Not needed for catalogue calls",
+    },
+    { key: "access_token", label: "System User Access Token", secret: true },
+  ],
+};
+
+/**
+ * Canonical condition -> Meta's three-value enum.
+ *
+ * Meta has no grade scale, so every used grade collapses to "used". That is a
+ * real loss of information and the right place for it to happen is here, at
+ * the boundary, rather than by weakening what the canonical model can express.
+ */
+const metaCondition = (canonical: string): string =>
+  canonical === "NEW" ? "new" : canonical === "REFURBISHED" ? "refurbished" : "used";
+
+/**
+ * Variant options Meta understands as named PRODUCT_ITEM fields. Anything
+ * else ("Fabric", "Storage") has no field in the schema and would either fail
+ * validation or vanish silently — so unmapped options are dropped loudly, via
+ * ctx.log, where the sync log will show them.
+ */
+const META_OPTION_FIELDS: Record<string, string> = {
+  color: "color",
+  colour: "color",
+  size: "size",
+  material: "material",
+  pattern: "pattern",
+  gender: "gender",
+};
+
+function metaOptions(ctx: ConnectorContext, v: CanonicalVariant): Record<string, string> {
+  const out: Record<string, string> = {};
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(v.options ?? {})) {
+    const field = META_OPTION_FIELDS[key.toLowerCase()];
+    if (field) out[field] = value;
+    else dropped.push(key);
+  }
+  if (dropped.length > 0) {
+    ctx.log(
+      `Meta catalogue has no field for option(s) ${dropped.join(", ")} on ${v.sku}; dropped`,
+    );
+  }
+  return out;
+}
+
+/**
+ * One PRODUCT_ITEM feed row per variant, grouped under the product's SKU.
+ *
+ * Meta models a variant as its own `id` (the retailer id) tied together by
+ * item_group_id, rather than as a child row under a parent the way a
+ * marketplace does. A single-variant product still gets a group so that
+ * adding a second size later does not restructure the listing.
+ *
+ * price / sale_price embed the ISO currency in the string ("499.00 INR") —
+ * there is no separate currency field — and the currency comes from the
+ * variant (the seller profile as fallback), never a hardcoded constant.
+ *
+ * The canonical free-text `category` is deliberately not sent: PRODUCT_ITEM
+ * has only the fb_product_category / google_product_category taxonomy fields,
+ * and a free-text value fits neither, so mapping it would mean inventing a
+ * taxonomy lookup the findings do not support.
+ */
+const metaItem = (
+  ctx: ConnectorContext,
+  p: CanonicalProduct,
+  i: number,
+  method: "CREATE" | "UPDATE",
+) => {
+  const v = p.variants[i]!;
+  const a = p.attributes as any;
+  const currency = v.currency || ctx.seller.currency;
+  /*
+   * Channel price rules apply to priceCents only, so a markup can push the
+   * selling price above the list price. Meta has no "selling above list"
+   * shape: when that happens the effective selling price IS the price, so it
+   * goes in `price` (never the lower list number, which would underprice the
+   * listing) and there is no sale. sale_price is set only for a genuine
+   * discount — and because items_batch UPDATE leaves unlisted fields
+   * unchanged, a lapsed discount must be cleared explicitly: on UPDATE the
+   * empty string wipes the field, while omitting it (as CREATE does) would
+   * keep the old sale price showing forever.
+   */
+  const salePrice =
+    v.priceCents < v.mrpCents
+      ? `${money(v.priceCents)} ${currency}`
+      : method === "UPDATE"
+        ? ""
+        : undefined;
+  return {
+    id: v.sku,
+    item_group_id: p.sku,
+    title: p.title,
+    description: p.description,
+    brand: p.brand,
+    condition: metaCondition(String(a.condition ?? "NEW")),
+    availability: v.available > 0 ? "in stock" : "out of stock",
+    quantity_to_sell_on_facebook: v.available,
+    price: `${money(Math.max(v.priceCents, v.mrpCents))} ${currency}`,
+    sale_price: salePrice,
+    link: a.landing_url ?? "",
+    image_link: p.images[0]?.url ?? "",
+    additional_image_link: p.images.slice(1, 10).map((im) => im.url),
+    ...metaOptions(ctx, v),
+  };
+};
+
+interface MetaSpec {
+  name: string;
+  displayName: string;
+  idPrefix: string;
+  regions: string[];
+  credentialsNote: string;
+}
+
+const META_CAPABILITIES: Capabilities = {
   createProduct: true,
   updateProduct: true,
   deleteProduct: true,
@@ -127,62 +272,170 @@ const BASE_CAPABILITIES: Capabilities = {
   variants: true,
 };
 
-function makeSocialConnector(spec: SocialSpec): MarketplaceConnector {
+/** One status check per batch, ~2s after the POST — bounded, never a loop. */
+const BATCH_STATUS_DELAY_MS = 2000;
+
+function makeMetaConnector(spec: MetaSpec): MarketplaceConnector {
   const manifest: Manifest = {
     name: spec.name,
     displayName: spec.displayName,
     version: "0.1.0",
     platformType: "social",
-    group: spec.group ?? "Social",
-    status: spec.status ?? "development",
+    group: "Social",
+    status: "ready",
     idPrefix: spec.idPrefix,
-    authentication: spec.authFields,
+    authentication: metaAuth,
+    credentialsNote: spec.credentialsNote,
     regions: spec.regions,
-    capabilities: { ...BASE_CAPABILITIES, ...spec.capabilities },
-    requiredFields: [...SOCIAL_REQUIRED, ...(spec.required ?? [])],
-    rateLimits: spec.rateLimits,
-    docsUrl: spec.docsUrl,
-    sellerPortalUrl: spec.sellerPortalUrl,
+    capabilities: META_CAPABILITIES,
+    requiredFields: META_REQUIRED,
+    rateLimits: { requestsPerSecond: 5, burst: 10 },
+    docsUrl: "https://developers.facebook.com/docs/commerce-platform",
+    setupGuide: "https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/meta.md",
+    sellerPortalUrl: "https://business.facebook.com/commerce",
   };
 
   async function call(ctx: ConnectorContext, path: string, init: RequestInit = {}): Promise<any> {
-    const headers = spec.authHeaders(ctx.credentials);
-    if (Object.values(headers).some((v) => !v)) {
-      throw new ConnectorError(`missing ${spec.displayName} credentials`, "AUTHENTICATION");
+    const token = ctx.credentials.access_token;
+    if (!token) {
+      throw new ConnectorError(`missing ${spec.displayName} access token`, "AUTHENTICATION");
     }
-    const container = ctx.credentials[spec.containerKey];
-    if (!container) {
+    const catalog = ctx.credentials.catalog_id;
+    if (!catalog) {
+      throw new ConnectorError(`missing ${spec.displayName} catalog_id`, "AUTHENTICATION");
+    }
+
+    const res = await fetch(`${META_GRAPH}${path.replace("{container}", catalog)}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...(init.headers ?? {}),
+      },
+    });
+    if (res.ok) {
+      const text = await res.text();
+      return text ? JSON.parse(text) : null;
+    }
+
+    const text = await res.text();
+    if (res.status === 429) {
+      // Undocumented on the Graph API but handled anyway; prefer an explicit
+      // Retry-After if one ever appears, else the usage-header estimate.
+      const ra = Number(res.headers.get("retry-after"));
+      throw new ConnectorError(`${spec.displayName} rate limit`, "RATE_LIMITED", {
+        retryAfterMs: Number.isFinite(ra) && ra > 0 ? ra * 1000 : metaRetryAfterMs(res),
+      });
+    }
+    let bodyCode: number | undefined;
+    let bodyType: string | undefined;
+    try {
+      const bodyError = JSON.parse(text)?.error;
+      const code = Number(bodyError?.code);
+      if (Number.isFinite(code)) bodyCode = code;
+      if (typeof bodyError?.type === "string") bodyType = bodyError.type;
+    } catch {
+      // Non-JSON error body; classify purely by status below.
+    }
+    if (bodyCode !== undefined && META_THROTTLE_CODES.has(bodyCode)) {
       throw new ConnectorError(
-        `missing ${spec.displayName} ${spec.containerKey}`,
+        `${spec.displayName} rate limit (Graph error ${bodyCode})`,
+        "RATE_LIMITED",
+        { retryAfterMs: metaRetryAfterMs(res) },
+      );
+    }
+    /*
+     * Auth failures arrive as HTTP 400, not 401: an expired or revoked token
+     * comes back as an OAuthException (error.code 190, or 102 for a bad
+     * session). Classifying by status alone would call that VALIDATION, so
+     * health() would show API_FAILURE instead of AUTH_FAILURE and jobs would
+     * dead-letter as validation noise instead of prompting a re-auth. Checked
+     * after the throttle codes because Meta's rate-limit errors (4 / 17) are
+     * also typed OAuthException.
+     */
+    if (bodyType === "OAuthException" || bodyCode === 190 || bodyCode === 102) {
+      throw new ConnectorError(
+        `${spec.displayName} auth failed (${res.status}): ${text.slice(0, 500)}`,
         "AUTHENTICATION",
       );
     }
-
-    const res = await fetch(`${spec.baseUrl}${path.replace("{container}", container)}`, {
-      ...init,
-      headers: { ...headers, "Content-Type": "application/json", ...(init.headers ?? {}) },
-    });
-    if (res.status === 429) {
-      const ra = Number(res.headers.get("retry-after") ?? 60);
-      throw new ConnectorError(`${spec.displayName} rate limit`, "RATE_LIMITED", {
-        retryAfterMs: ra * 1000,
-      });
-    }
-    if (!res.ok) throw classifyStatus(res.status, await res.text());
-    const text = await res.text();
-    return text ? JSON.parse(text) : null;
+    throw classifyStatus(res.status, text);
   }
 
   /**
-   * One feed item per variant.
+   * POST a batch of PRODUCT_ITEM requests and confirm it landed.
    *
-   * Both platforms model a variant as its own retailer_id grouped by an item
-   * group, rather than as a child row under a parent the way a marketplace
-   * does. A single-variant product still gets a group so that adding a second
-   * size later does not restructure the listing.
+   * items_batch is asynchronous: HTTP 200 means "accepted", the `handles`
+   * array names the background job, and per-item rejections arrive either in
+   * `validation_status` on the POST response or from a later
+   * check_batch_request_status call. So an item can fail while every HTTP
+   * status is 200 — silently reporting success here would hide exactly the
+   * errors a seller needs to see.
+   *
+   * The follow-up is a single bounded check, ~2s after the POST, not a
+   * polling loop: the retailer id is the durable idempotent handle (every
+   * later write addresses the item by `id`), so if Meta is still processing
+   * we log the job handle and accept rather than burn budget waiting.
    */
-  function toItems(p: CanonicalProduct): Record<string, unknown>[] {
-    return p.variants.map((_, i) => spec.toItem(p, i));
+  async function itemsBatch(
+    ctx: ConnectorContext,
+    requests: Array<{ method: string; data: Record<string, unknown> }>,
+  ): Promise<any> {
+    const body = await call(ctx, "/{container}/items_batch", {
+      method: "POST",
+      body: JSON.stringify({ item_type: "PRODUCT_ITEM", requests }),
+    });
+
+    const statuses: any[] = Array.isArray(body?.validation_status) ? body.validation_status : [];
+    const rejected = statuses.filter((s) => Array.isArray(s?.errors) && s.errors.length > 0);
+    if (rejected.length > 0) {
+      const detail = rejected
+        .map(
+          (s: any) =>
+            `${s.retailer_id ?? "?"}: ${(s.errors ?? []).map((e: any) => e.message ?? "").join("; ")}`,
+        )
+        .join(" | ");
+      throw new ConnectorError(
+        `${spec.displayName} rejected ${rejected.length} item(s): ${detail.slice(0, 500)}`,
+        "VALIDATION",
+        { details: rejected },
+      );
+    }
+
+    const handle = body?.handles?.[0];
+    if (handle == null) return body;
+
+    await new Promise((resolve) => setTimeout(resolve, BATCH_STATUS_DELAY_MS));
+    const status = await call(
+      ctx,
+      `/{container}/check_batch_request_status?handle=${encodeURIComponent(String(handle))}`,
+    );
+    const jobs: any[] = Array.isArray(status?.data) ? status.data : [];
+    const errors = jobs.flatMap((j) => (Array.isArray(j?.errors) ? j.errors : []));
+    if (errors.length > 0) {
+      const detail = errors
+        .map((e: any) => `${e.retailer_id ?? e.id ?? "?"}: ${e.message ?? ""}`)
+        .join(" | ");
+      throw new ConnectorError(
+        `${spec.displayName} batch failed for ${errors.length} item(s): ${detail.slice(0, 500)}`,
+        "VALIDATION",
+        { details: errors },
+      );
+    }
+    if (jobs.some((j) => j?.status && j.status !== "finished")) {
+      ctx.log(
+        `${spec.displayName} batch ${String(handle)} still processing; accepted — items are addressed by retailer id on the next write`,
+      );
+    }
+    return body;
+  }
+
+  function toItems(
+    ctx: ConnectorContext,
+    p: CanonicalProduct,
+    method: "CREATE" | "UPDATE",
+  ): Record<string, unknown>[] {
+    return p.variants.map((_, i) => metaItem(ctx, p, i, method));
   }
 
   return {
@@ -194,7 +447,7 @@ function makeSocialConnector(spec: SocialSpec): MarketplaceConnector {
         return { status: "HEALTHY", detail: "mock mode" };
       }
       try {
-        await call(ctx, spec.paths.profile);
+        await call(ctx, "/{container}");
         return { status: "HEALTHY" };
       } catch (e) {
         const err = e as ConnectorError;
@@ -216,14 +469,17 @@ function makeSocialConnector(spec: SocialSpec): MarketplaceConnector {
         );
         return { remoteId };
       }
-      const body = await call(ctx, spec.paths.batch, {
-        method: "POST",
-        body: JSON.stringify({ requests: toItems(p).map((data) => ({ method: "CREATE", data })) }),
-      });
-      return {
-        remoteId: String(body?.handles?.[0] ?? body?.data?.[0]?.id ?? p.sku),
-        raw: body,
-      };
+      const body = await itemsBatch(
+        ctx,
+        toItems(ctx, p, "CREATE").map((data) => ({ method: "CREATE", data })),
+      );
+      /*
+       * The retailer id is the remote id. The `handles` in the response name
+       * an ephemeral batch job, not the item; the item's durable, idempotent
+       * address on every later write is the id we chose ourselves — the SKU.
+       * The job handles ride along in raw for the audit trail.
+       */
+      return { remoteId: p.sku, raw: body };
     },
 
     async updateProduct(ctx, p, remoteId) {
@@ -233,10 +489,10 @@ function makeSocialConnector(spec: SocialSpec): MarketplaceConnector {
         ctx.log(`mock: updated ${spec.displayName} catalogue item ${remoteId}`);
         return;
       }
-      await call(ctx, spec.paths.batch, {
-        method: "POST",
-        body: JSON.stringify({ requests: toItems(p).map((data) => ({ method: "UPDATE", data })) }),
-      });
+      await itemsBatch(
+        ctx,
+        toItems(ctx, p, "UPDATE").map((data) => ({ method: "UPDATE", data })),
+      );
     },
 
     async updateInventory(ctx, u: InventoryUpdate) {
@@ -247,26 +503,21 @@ function makeSocialConnector(spec: SocialSpec): MarketplaceConnector {
         return;
       }
       /*
-       * Availability is a word here, not a number. Both platforms hide an
-       * out-of-stock item rather than showing "0 left", so the useful signal
-       * is the threshold crossing; the count rides along for the platforms
-       * that surface it.
+       * Availability is a word here, not a number. Meta hides an out-of-stock
+       * item rather than showing "0 left", so the useful signal is the
+       * threshold crossing; quantity_to_sell_on_facebook rides along for the
+       * placements that surface a count.
        */
-      await call(ctx, spec.paths.batch, {
-        method: "POST",
-        body: JSON.stringify({
-          requests: [
-            {
-              method: "UPDATE",
-              data: {
-                retailer_id: u.sku,
-                availability: u.available > 0 ? "in stock" : "out of stock",
-                inventory: u.available,
-              },
-            },
-          ],
-        }),
-      });
+      await itemsBatch(ctx, [
+        {
+          method: "UPDATE",
+          data: {
+            id: u.sku,
+            availability: u.available > 0 ? "in stock" : "out of stock",
+            quantity_to_sell_on_facebook: u.available,
+          },
+        },
+      ]);
     },
 
     async updatePrice(ctx, u: PriceUpdate) {
@@ -276,285 +527,69 @@ function makeSocialConnector(spec: SocialSpec): MarketplaceConnector {
         ctx.log(`mock: ${spec.displayName} price ${u.sku} -> ${money(u.priceCents)}`);
         return;
       }
-      await call(ctx, spec.paths.batch, {
-        method: "POST",
-        body: JSON.stringify({
-          requests: [
-            {
-              method: "UPDATE",
-              data: {
-                retailer_id: u.sku,
-                price: money(u.priceCents),
-                sale_price: u.priceCents < u.mrpCents ? money(u.priceCents) : undefined,
-              },
-            },
-          ],
-        }),
-      });
+      /*
+       * Same semantics as the item builder: price is the list price (MRP) and
+       * sale_price the discounted one, with the same two constraints. Channel
+       * price rules apply to priceCents only, so when a markup pushes it
+       * above list the effective selling price IS the price and is advertised
+       * as such — never the lower list number, which would underprice the
+       * listing. And because items_batch UPDATE leaves unlisted fields
+       * unchanged, a lapsed discount is cleared explicitly with sale_price:
+       * "" — omitting the field would keep the old sale price showing.
+       */
+      const currency = u.currency || ctx.seller.currency;
+      await itemsBatch(ctx, [
+        {
+          method: "UPDATE",
+          data: {
+            id: u.sku,
+            price: `${money(Math.max(u.priceCents, u.mrpCents))} ${currency}`,
+            sale_price:
+              u.priceCents < u.mrpCents ? `${money(u.priceCents)} ${currency}` : "",
+          },
+        },
+      ]);
     },
 
-    async listOrders(ctx, since): Promise<RemoteOrder[]> {
+    async listOrders(): Promise<RemoteOrder[]> {
       /*
-       * Guarded rather than merely empty. A connector whose manifest says
-       * orderImport:false should never be asked for orders — the planner
-       * checks capabilities before queueing — so reaching here means something
-       * upstream ignored the manifest, and failing loudly is better than
-       * returning [] and letting it look like a shop with no sales.
+       * Guarded rather than merely empty. Meta removed native checkout
+       * globally in mid-2025, so every purchase completes on the seller's own
+       * site and no Meta-side order exists — the manifest says
+       * orderImport:false and the planner should never call this. Reaching
+       * here means something upstream ignored the manifest, and failing
+       * loudly is better than returning [] and letting it look like a shop
+       * with no sales.
        */
-      if (!manifest.capabilities.orderImport) {
-        throw new ConnectorError(
-          `${spec.displayName} has no native checkout in the configured regions, so there are no orders to import`,
-          "VALIDATION",
-        );
-      }
-
-      if (ctx.mode === "mock") {
-        await mockLatency(ctx);
-        const skus: string[] = ctx.config.mockOrderSkus ?? [];
-        const c = spec.mockCustomer!;
-        return skus.slice(0, 1).map((sku, i) => ({
-          externalId: `${spec.idPrefix}-ORD-${mockRemoteId("", sku)}-${i}`,
-          status: "NEW",
-          currency: spec.mockCurrency ?? "USD",
-          totalCents: spec.mockTotalCents ?? 4999,
-          placedAt: new Date().toISOString(),
-          customer: { name: c.name, email: "", phone: "" },
-          shippingAddress: {
-            line1: "48 Commercial Street",
-            city: c.city,
-            state: c.state,
-            postalCode: c.postalCode,
-            country: c.country,
-          },
-          items: [
-            {
-              sku,
-              title: `Mock ${spec.displayName} item`,
-              quantity: 1,
-              priceCents: spec.mockTotalCents ?? 4999,
-              remoteItemId: `${spec.idPrefix}I-${i}`,
-            },
-          ],
-        }));
-      }
-
-      const body = await call(
-        ctx,
-        `${spec.paths.orders}?since=${encodeURIComponent(since.toISOString())}&page_size=50`,
+      throw new ConnectorError(
+        `${spec.displayName} shops complete checkout on your own website, so there are no orders on Meta to import`,
+        "VALIDATION",
       );
-      return (body?.orders ?? body?.data ?? []).map((o: any) => ({
-        externalId: String(o.order_id ?? o.id),
-        status: String(o.order_status ?? o.status ?? "NEW"),
-        currency: String(o.currency ?? spec.mockCurrency ?? "USD"),
-        totalCents: Math.round(Number(o.payment?.total_amount ?? o.total ?? 0) * 100),
-        placedAt: o.create_time ?? o.created_at ?? new Date().toISOString(),
-        customer: {
-          name: o.recipient_address?.name ?? o.buyer_name ?? "",
-          email: o.buyer_email ?? "",
-          phone: o.recipient_address?.phone ?? "",
-        },
-        shippingAddress: o.recipient_address ?? o.shipping_address ?? {},
-        items: (o.line_items ?? o.items ?? []).map((it: any) => ({
-          sku: it.seller_sku ?? it.retailer_id ?? it.sku ?? "",
-          title: it.product_name ?? it.name ?? "",
-          quantity: Number(it.quantity ?? 1),
-          priceCents: Math.round(Number(it.sale_price ?? it.price ?? 0) * 100),
-          remoteItemId: String(it.line_item_id ?? it.id ?? ""),
-        })),
-      }));
     },
   };
 }
 
-// ------------------------------------------------------------------ Meta
-
-/**
- * Meta's Graph API, shared by Instagram and Facebook.
- *
- * The catalogue is the product, the surface is a setting. Both connectors point
- * at `/{catalog_id}/items_batch` with the same payload shape; what differs is
- * which surface the seller has connected the catalogue to, which is done in
- * Commerce Manager rather than over the API.
- */
-const META_GRAPH = "https://graph.facebook.com/v21.0";
-
-const metaAuth: Manifest["authentication"] = {
-  type: "oauth2_access_token",
-  fields: [
-    { key: "catalog_id", label: "Catalog ID", secret: false },
-    { key: "business_id", label: "Business ID", secret: false },
-    { key: "access_token", label: "System User Access Token", secret: true },
-  ],
-};
-
-const metaHeaders = (c: Record<string, string>) => ({
-  Authorization: `Bearer ${c.access_token ?? ""}`,
-});
-
-/**
- * Canonical condition -> Meta's three-value enum.
- *
- * Meta has no grade scale, so every used grade collapses to "used". That is a
- * real loss of information and the right place for it to happen is here, at
- * the boundary, rather than by weakening what the canonical model can express.
- */
-const metaCondition = (canonical: string): string =>
-  canonical === "NEW" ? "new" : canonical === "REFURBISHED" ? "refurbished" : "used";
-
-/** One feed row per variant, grouped under the product's SKU. */
-const metaItem = (p: CanonicalProduct, i: number) => {
-  const v = p.variants[i]!;
-  const a = p.attributes as any;
-  return {
-    retailer_id: v.sku,
-    item_group_id: p.sku,
-    name: p.title,
-    description: p.description,
-    brand: p.brand,
-    category: p.category,
-    condition: metaCondition(String(a.condition ?? "NEW")),
-    availability: v.available > 0 ? "in stock" : "out of stock",
-    inventory: v.available,
-    price: money(v.mrpCents),
-    sale_price: v.priceCents < v.mrpCents ? money(v.priceCents) : undefined,
-    currency: "INR",
-    url: a.landing_url ?? "",
-    image_url: p.images[0]?.url ?? "",
-    additional_image_urls: p.images.slice(1, 10).map((im) => im.url),
-    ...Object.fromEntries(Object.entries(v.options ?? {}).map(([k, val]) => [k, val])),
-  };
-};
-
-export const instagram = makeSocialConnector({
+export const instagram = makeMetaConnector({
   name: "instagram",
   displayName: "Instagram",
-  baseUrl: META_GRAPH,
-  docsUrl: "https://developers.facebook.com/docs/commerce-platform",
-  sellerPortalUrl: "https://business.facebook.com/commerce",
   idPrefix: "IGS",
-  status: "ready",
-  // Product tagging works broadly; native checkout does not. See the header.
+  // Product tagging works broadly; every tag links out to landing_url.
   regions: ["IN", "US", "GB", "AE", "SG", "AU", "CA", "DE", "BR"],
-  capabilities: { orderImport: false },
-  authFields: metaAuth,
-  authHeaders: metaHeaders,
-  rateLimits: { requestsPerSecond: 5, burst: 10 },
-  containerKey: "catalog_id",
-  paths: { profile: "/{container}", batch: "/{container}/items_batch" },
-  required: [
-    {
-      path: "attributes.instagram_shopping_enabled",
-      label: "Shopping enabled on the account",
-      required: true,
-      help: "The Instagram account must be approved for Shopping before tags appear",
-    },
-  ],
-  toItem: metaItem,
+  /*
+   * Shopping approval is a property of the account, not of each product,
+   * which is why it lives here (and in the setup guide) rather than as a
+   * per-product required field: the API accepts catalogue writes before the
+   * review passes, but nothing is shoppable until it does.
+   */
+  credentialsNote:
+    "These are not your Instagram login. Generate a system-user access token with the catalog_management and business_management scopes in Business Settings → System users, and copy the Catalog ID from your catalogue's settings in Commerce Manager. Product tags only appear once the Instagram account has passed Shopping review in Commerce Manager.",
 });
 
-export const facebook = makeSocialConnector({
+export const facebook = makeMetaConnector({
   name: "facebook",
   displayName: "Facebook",
-  baseUrl: META_GRAPH,
-  docsUrl: "https://developers.facebook.com/docs/commerce-platform",
-  sellerPortalUrl: "https://business.facebook.com/commerce",
   idPrefix: "FBS",
-  status: "ready",
   regions: ["IN", "US", "GB", "AE", "SG", "AU", "CA", "DE", "BR"],
-  capabilities: { orderImport: false },
-  authFields: metaAuth,
-  authHeaders: metaHeaders,
-  rateLimits: { requestsPerSecond: 5, burst: 10 },
-  containerKey: "catalog_id",
-  paths: { profile: "/{container}", batch: "/{container}/items_batch" },
-  toItem: metaItem,
-});
-
-// ---------------------------------------------------------------- TikTok
-
-/**
- * TikTok Shop.
- *
- * Unlike Meta this is a full commerce platform with its own checkout and its
- * own orders, so it is the one connector here that sets orderImport: true.
- * It is also the one a seller in India cannot use at all — TikTok has been
- * banned there since 2020, which is why IN is absent from `regions` and why
- * this connector is not counted among the India-first ones.
- */
-export const tiktok = makeSocialConnector({
-  name: "tiktok",
-  displayName: "TikTok Shop",
-  baseUrl: "https://open-api.tiktokglobalshop.com",
-  docsUrl: "https://partner.tiktokshop.com/docv2",
-  sellerPortalUrl: "https://seller.tiktokglobalshop.com",
-  idPrefix: "TTS",
-  status: "ready",
-  regions: ["US", "GB", "ID", "MY", "TH", "VN", "PH", "SG"],
-  capabilities: { orderImport: true, deleteProduct: true },
-  authFields: {
-    type: "oauth2_authorization_code",
-    fields: [
-      { key: "shop_id", label: "Shop ID", secret: false },
-      { key: "app_key", label: "App Key", secret: false },
-      { key: "access_token", label: "Access Token", secret: true },
-      { key: "app_secret", label: "App Secret", secret: true },
-    ],
-  },
-  authHeaders: (c) => ({
-    "x-tts-access-token": c.access_token ?? "",
-    "x-tts-app-key": c.app_key ?? "",
-  }),
-  rateLimits: { requestsPerSecond: 10, burst: 20 },
-  containerKey: "shop_id",
-  paths: {
-    profile: "/authorization/202309/shops",
-    batch: "/product/202309/products",
-    orders: "/order/202309/orders/search",
-  },
-  required: [
-    {
-      path: "attributes.tiktok_category_id",
-      label: "TikTok category ID",
-      required: true,
-      help: "TikTok's own taxonomy leaf; product creation rejects a free-text category",
-    },
-    {
-      path: "attributes.package_weight_g",
-      label: "Package weight (g)",
-      required: true,
-      help: "Required to quote shipping at checkout",
-    },
-  ],
-  mockCustomer: {
-    name: "Jordan Ellis",
-    city: "Manchester",
-    state: "",
-    postalCode: "M1 2AB",
-    country: "GB",
-  },
-  mockCurrency: "GBP",
-  mockTotalCents: 3499,
-  toItem: (p, i) => {
-    const v = p.variants[i]!;
-    const a = p.attributes as any;
-    return {
-      product_name: p.title,
-      description: p.description,
-      category_id: a.tiktok_category_id ?? "",
-      brand_name: p.brand,
-      main_images: p.images.slice(0, 9).map((im) => ({ uri: im.url })),
-      package_weight: { value: String(a.package_weight_g ?? p.weightG ?? 0), unit: "GRAM" },
-      skus: [
-        {
-          seller_sku: v.sku,
-          sales_attributes: Object.entries(v.options ?? {}).map(([name, value]) => ({
-            name,
-            value_name: value,
-          })),
-          price: { amount: money(v.priceCents), currency: "GBP" },
-          inventory: [{ warehouse_id: a.tiktok_warehouse_id ?? "", quantity: v.available }],
-        },
-      ],
-    };
-  },
+  credentialsNote:
+    "These are not your Facebook login. Generate a system-user access token with the catalog_management and business_management scopes in Business Settings → System users, and copy the Catalog ID from your catalogue's settings in Commerce Manager.",
 });

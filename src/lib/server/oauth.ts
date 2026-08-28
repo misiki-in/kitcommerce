@@ -102,7 +102,10 @@ const etsy: OAuthProvider = {
   label: "Etsy",
   pkce: true,
 
-  enabled: () => Boolean(config.oauth.etsy.clientId),
+  // The clientId alone is not enough: the connector cannot make a single API
+  // call without the shared secret in the x-api-key header, so exchanged
+  // credentials would be unusable. No secret, no Connect button.
+  enabled: () => Boolean(config.oauth.etsy.clientId && config.oauth.etsy.sharedSecret),
 
   authorizeUrl({ redirectUri, state, challenge }) {
     const q = new URLSearchParams({
@@ -135,14 +138,20 @@ const etsy: OAuthProvider = {
      * The user ID is not the shop ID, so it is not guessed at here: the seller
      * still supplies shop_id, and only the token pair comes from the exchange.
      */
-    return {
-      credentials: {
-        // The connector sends this as x-api-key on every call.
-        api_key: config.oauth.etsy.clientId,
-        access_token: String(body.access_token),
-        refresh_token: String(body.refresh_token ?? ""),
-      },
+    const credentials: Record<string, string> = {
+      // The keystring. The connector joins it with the shared secret into the
+      // "keystring:shared_secret" x-api-key header Etsy now requires.
+      api_key: config.oauth.etsy.clientId,
+      access_token: String(body.access_token),
+      refresh_token: String(body.refresh_token ?? ""),
     };
+    // enabled() gates on the shared secret as well as the client ID, so any
+    // exchange reached through the redirect flow always has it; the guard
+    // remains only for a caller that bypasses enabled().
+    if (config.oauth.etsy.sharedSecret) {
+      credentials.shared_secret = config.oauth.etsy.sharedSecret;
+    }
+    return { credentials };
   },
 };
 

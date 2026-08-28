@@ -14,7 +14,8 @@ import { flipkart } from "./flipkart";
 import { meesho } from "./meesho";
 import { ajio, jiomart, myntra, nykaa, snapdeal, tatacliq } from "./india";
 import { blinkit, instamart, zepto } from "./quickcommerce";
-import { facebook, instagram, tiktok } from "./social";
+import { facebook, instagram } from "./social";
+import { tiktok } from "./tiktok";
 
 export const connectors: Record<string, MarketplaceConnector> = {
   // India — horizontal

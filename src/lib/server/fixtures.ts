@@ -11,6 +11,12 @@ export const COMPLETE_ATTRIBUTES: Record<string, string> = {
   // canonical condition vocabulary; connectors translate to their own
   condition: "NEW",
 
+  // Flipkart
+  //
+  // The v3 Listing API attaches offers to catalogue products that already
+  // exist on Flipkart, so a complete product names its catalogue entry (FSN).
+  flipkart_fsn: "FSNDEMO1234567",
+
   // eBay
   ebay_category_id: "11450",
   ebay_fulfillment_policy_id: "FP-DEMO-1",
@@ -53,11 +59,10 @@ export const COMPLETE_ATTRIBUTES: Record<string, string> = {
 
   // social (Instagram, Facebook, TikTok Shop)
   //
-  // landing_url is the one that matters: outside Meta's native checkout a
+  // landing_url is the one that matters: Meta retired native checkout, so a
   // tagged product has to send the buyer somewhere, and that somewhere is
   // your own site.
   landing_url: "https://example.com/products/mysore-silk-saree",
-  instagram_shopping_enabled: "yes",
   tiktok_category_id: "601152",
   tiktok_warehouse_id: "WH-DEMO-1",
   package_weight_g: "800",

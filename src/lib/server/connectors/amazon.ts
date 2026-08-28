@@ -10,6 +10,12 @@
  *   - SP-API no longer requires AWS SigV4 request signing; the LWA bearer token
  *     is sufficient. Older integration guides still tell you otherwise.
  *
+ * Orders are read through Orders API v0, which Amazon has deprecated and will
+ * remove on 2027-03-27. It keeps working until then; the migration target is
+ * Orders API v2026-01-01 (searchOrders/getOrder with includedData), which
+ * folds line items and role-based buyer PII into one call and retires both
+ * the per-order item fetch and the Restricted Data Token dance in listOrders.
+ *
  * Docs: https://developer-docs.amazon.com/sp-api/
  */
 import {
@@ -25,6 +31,7 @@ import {
   type RemoteOrder,
   type RemoteProduct,
 } from "../connector";
+import { createHash } from "node:crypto";
 import { mockLatency, mockMaybeFail, mockRemoteId } from "./mock";
 
 /** Region host is chosen by marketplace, not by the seller's country. */
@@ -61,6 +68,8 @@ const manifest: Manifest = {
       { key: "seller_id", label: "Selling Partner ID", secret: false },
     ],
   },
+  credentialsNote:
+    "Amazon issues these only after a reviewed developer registration (Seller Central > Apps and Services > Develop Apps), which takes days to approve. If this installation has Amazon OAuth configured, the Connect button obtains everything except the review for you — the setup guide covers both routes.",
   regions: Object.keys(MARKETPLACES),
   capabilities: {
     createProduct: true,
@@ -110,9 +119,12 @@ const manifest: Manifest = {
     { path: "weightG", label: "Item weight (g)", required: true },
   ],
   // SP-API rate limits are per-operation; this is the conservative floor for
-  // the Listings Items endpoints.
-  rateLimits: { requestsPerSecond: 5, burst: 10 },
+  // the Listings Items endpoints. putListingsItem allows 5 rps with a burst of
+  // 10, but patchListingsItem — the inventory and price path — bursts only to
+  // 5, and the floor is what keeps a mixed batch safe.
+  rateLimits: { requestsPerSecond: 5, burst: 5 },
   docsUrl: "https://developer-docs.amazon.com/sp-api/",
+  setupGuide: "https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/amazon.md",
   sellerPortalUrl: "https://sellercentral.amazon.in",
   orderUrlTemplate: "https://sellercentral.amazon.in/orders-v3/order/{id}",
 };
@@ -138,7 +150,22 @@ function marketplace(ctx: ConnectorContext) {
   return m;
 }
 
-/** LWA access tokens live ~1h; exchanged per run rather than cached to disk. */
+/**
+ * LWA access tokens, cached for their stated lifetime.
+ *
+ * Amazon's tokens last an hour and every SP-API call needs one. A listOrders
+ * run makes one call per order for line items, so exchanging per request would
+ * multiply traffic against the LWA token endpoint — which carries its own,
+ * much tighter throttle than SP-API itself. Keyed by a hash of the
+ * credentials, never the credentials themselves: this map is process-wide and
+ * a secret should not sit in a key that any future debug dump of it would
+ * print.
+ */
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+/** Renew a minute early, so a token cannot expire mid-flight on a slow call. */
+const TOKEN_MARGIN_MS = 60_000;
+
 async function accessToken(ctx: ConnectorContext): Promise<string> {
   const { client_id, client_secret, refresh_token } = ctx.credentials;
   if (!client_id || !client_secret || !refresh_token) {
@@ -147,6 +174,11 @@ async function accessToken(ctx: ConnectorContext): Promise<string> {
       "AUTHENTICATION",
     );
   }
+
+  const cacheKey = createHash("sha256").update(`${client_id}|${refresh_token}`).digest("hex");
+  const cached = tokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+
   const res = await fetch("https://api.amazon.com/auth/o2/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -158,7 +190,15 @@ async function accessToken(ctx: ConnectorContext): Promise<string> {
     }),
   });
   if (!res.ok) throw classifyStatus(res.status, await res.text());
-  const body = (await res.json()) as { access_token: string };
+  const body = (await res.json()) as { access_token: string; expires_in?: number };
+  // expires_in is seconds (documented 3600). A missing value must not become
+  // an immediately-stale cache entry — the bug this cache exists to prevent —
+  // so it falls back to the documented hour.
+  const lifetimeMs = (body.expires_in ?? 3600) * 1000;
+  tokenCache.set(cacheKey, {
+    token: body.access_token,
+    expiresAt: Date.now() + Math.max(0, lifetimeMs - TOKEN_MARGIN_MS),
+  });
   return body.access_token;
 }
 
@@ -187,6 +227,76 @@ const sellerId = (ctx: ConnectorContext) => {
   if (!id) throw new ConnectorError("missing Amazon seller_id", "AUTHENTICATION");
   return String(id);
 };
+
+/**
+ * Listings Items submissions answer 200 with a status of ACCEPTED or INVALID.
+ * INVALID is a permanent rejection: surfacing it as VALIDATION keeps the job
+ * from being retried and puts Amazon's issues in front of the merchant,
+ * instead of reporting success for a change that never happened.
+ */
+function rejectInvalid(body: any, what: string): void {
+  if (body?.status !== "INVALID") return;
+  throw new ConnectorError(
+    `Amazon rejected the ${what}: ${(body.issues ?? []).map((i: any) => i.message).join("; ")}`,
+    "VALIDATION",
+    { details: body.issues },
+  );
+}
+
+/**
+ * Restricted Data Token for order PII.
+ *
+ * Orders v0 treats buyer name/email and the shipping address as restricted
+ * data elements: getOrders succeeds on a plain LWA token but silently omits
+ * them. An RDT scoped to /orders/v0/orders (minted with the normal token on
+ * the same region host, ~1h lifetime) unlocks them when passed as
+ * x-amz-access-token on the getOrders calls — and only those: an RDT is
+ * valid solely for the restrictedResources named at minting, so the
+ * per-order item fetches stay on the plain token. Minting one requires
+ * the Direct-to-Consumer Shipping (Restricted) role on the app; when the role
+ * is missing Amazon answers 403, and the sync deliberately falls back to the
+ * plain token — an order without a buyer address is still an order, and
+ * missing PII must never be the reason an import fails.
+ */
+async function restrictedToken(ctx: ConnectorContext): Promise<string | null> {
+  try {
+    const body = await call(ctx, "/tokens/2021-03-01/restrictedDataToken", {
+      method: "POST",
+      body: JSON.stringify({
+        restrictedResources: [
+          {
+            method: "GET",
+            path: "/orders/v0/orders",
+            dataElements: ["buyerInfo", "shippingAddress"],
+          },
+        ],
+      }),
+    });
+    return body?.restrictedDataToken ?? null;
+  } catch (e) {
+    const err = e as ConnectorError;
+    if (err.class === "AUTHENTICATION") {
+      ctx.log(
+        "restricted data token refused (app lacks the restricted PII role); importing orders without buyer PII",
+      );
+      return null;
+    }
+    throw e;
+  }
+}
+
+/** A corrupt NextToken or bad watermark must never spin the sync forever. */
+const ORDER_PAGE_CAP = 10;
+
+/**
+ * getOrderItems allows 0.5 rps with a burst of 30. The first ~25 item fetches
+ * ride the burst (with headroom left for other traffic); the rest are paced
+ * under the refill rate so a large sync degrades to slow instead of to 429s.
+ */
+const ITEM_BURST_HEADROOM = 25;
+const ITEM_PACE_MS = 2_000;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * Canonical -> SP-API Listings Items attributes.
@@ -255,6 +365,9 @@ export const amazon: MarketplaceConnector = {
     }
     try {
       const m = marketplace(ctx);
+      // getMarketplaceParticipations is limited to 0.016 rps (burst 15) —
+      // roughly one call a minute. Anything polling health faster than that
+      // eats the burst and starts seeing 429s.
       await call(ctx, `/sellers/v1/marketplaceParticipations`);
       return { status: "HEALTHY", detail: `${m.id}` };
     } catch (e) {
@@ -295,13 +408,7 @@ export const amazon: MarketplaceConnector = {
       },
     );
 
-    if (body?.status === "INVALID") {
-      throw new ConnectorError(
-        `Amazon rejected the listing: ${(body.issues ?? []).map((i: any) => i.message).join("; ")}`,
-        "VALIDATION",
-        { details: body.issues },
-      );
-    }
+    rejectInvalid(body, "listing");
     // Amazon keys listings by the seller's own SKU; the ASIN only appears once
     // the listing is matched or created, so the SKU is the durable handle.
     return { remoteId: p.sku, raw: body };
@@ -315,7 +422,7 @@ export const amazon: MarketplaceConnector = {
       return;
     }
     const m = marketplace(ctx);
-    await call(
+    const body = await call(
       ctx,
       `/listings/2021-08-01/items/${sellerId(ctx)}/${encodeURIComponent(remoteId)}?marketplaceIds=${m.id}`,
       {
@@ -327,6 +434,7 @@ export const amazon: MarketplaceConnector = {
         }),
       },
     );
+    rejectInvalid(body, "listing update");
   },
 
   async updateInventory(ctx, u: InventoryUpdate) {
@@ -339,12 +447,17 @@ export const amazon: MarketplaceConnector = {
     const m = marketplace(ctx);
     // PATCH touches only fulfillment_availability, leaving the rest of the
     // listing untouched.
-    await call(
+    const body = await call(
       ctx,
       `/listings/2021-08-01/items/${sellerId(ctx)}/${encodeURIComponent(u.sku)}?marketplaceIds=${m.id}`,
       {
         method: "PATCH",
         body: JSON.stringify({
+          // patchListingsItem requires the listing's real product type and
+          // rejects the patch when this one mismatches it. The "PRODUCT"
+          // fallback only keeps the request well-formed — sellers should set
+          // config.default_product_type to the type their listings actually
+          // use.
           productType: ctx.config.default_product_type ?? "PRODUCT",
           patches: [
             {
@@ -361,6 +474,7 @@ export const amazon: MarketplaceConnector = {
         }),
       },
     );
+    rejectInvalid(body, "inventory patch");
   },
 
   async updatePrice(ctx, u: PriceUpdate) {
@@ -371,12 +485,15 @@ export const amazon: MarketplaceConnector = {
       return;
     }
     const m = marketplace(ctx);
-    await call(
+    const body = await call(
       ctx,
       `/listings/2021-08-01/items/${sellerId(ctx)}/${encodeURIComponent(u.sku)}?marketplaceIds=${m.id}`,
       {
         method: "PATCH",
         body: JSON.stringify({
+          // Same constraint as updateInventory: the patch is rejected when
+          // this product type mismatches the listing's real one, so
+          // config.default_product_type should be set.
           productType: ctx.config.default_product_type ?? "PRODUCT",
           patches: [
             {
@@ -394,6 +511,7 @@ export const amazon: MarketplaceConnector = {
         }),
       },
     );
+    rejectInvalid(body, "price patch");
   },
 
   async listOrders(ctx, since): Promise<RemoteOrder[]> {
@@ -421,15 +539,39 @@ export const amazon: MarketplaceConnector = {
     }
 
     const m = marketplace(ctx);
-    const body = await call(
-      ctx,
-      `/orders/v0/orders?MarketplaceIds=${m.id}&CreatedAfter=${encodeURIComponent(since.toISOString())}&MaxResultsPerPage=50`,
-    );
-    const orders = body?.payload?.Orders ?? [];
+
+    // Buyer PII only travels on a Restricted Data Token, and an RDT is valid
+    // solely for the restrictedResources it was minted for (GET
+    // /orders/v0/orders) — so it rides the order pages only. The per-order
+    // item fetches below stay on the plain LWA token: none of the mapped item
+    // fields is a restricted data element, and reusing the RDT there would
+    // 403 every fetch.
+    const rdt = await restrictedToken(ctx);
+    const auth = rdt ? { "x-amz-access-token": rdt } : undefined;
+
+    const orders: any[] = [];
+    let next: string | undefined;
+    for (let page = 0; page < ORDER_PAGE_CAP; page++) {
+      // NextToken supersedes the filter parameters on follow-up pages;
+      // MarketplaceIds stays because the API requires it on every call.
+      const query = next
+        ? `MarketplaceIds=${m.id}&NextToken=${encodeURIComponent(next)}`
+        : `MarketplaceIds=${m.id}&CreatedAfter=${encodeURIComponent(since.toISOString())}&MaxResultsPerPage=50`;
+      const body = await call(ctx, `/orders/v0/orders?${query}`, { headers: auth });
+      orders.push(...(body?.payload?.Orders ?? []));
+      next = body?.payload?.NextToken;
+      if (!next) break;
+    }
+    if (next) {
+      ctx.log(
+        `amazon: order pagination capped at ${ORDER_PAGE_CAP} pages; more orders remain in the window`,
+      );
+    }
 
     const out: RemoteOrder[] = [];
-    for (const o of orders) {
+    for (const [i, o] of orders.entries()) {
       // Line items are a separate call per order; SP-API has no expand.
+      if (i >= ITEM_BURST_HEADROOM) await sleep(ITEM_PACE_MS);
       let items: RemoteOrder["items"] = [];
       try {
         const li = await call(ctx, `/orders/v0/orders/${o.AmazonOrderId}/orderItems`);
@@ -440,8 +582,12 @@ export const amazon: MarketplaceConnector = {
           priceCents: Math.round(Number(it.ItemPrice?.Amount ?? 0) * 100),
           remoteItemId: String(it.OrderItemId ?? ""),
         }));
-      } catch {
-        // A throttled line-item fetch should not lose the order header.
+      } catch (e) {
+        // A failed line-item fetch should not lose the order header, but it
+        // must not vanish silently either: the order lands with no items and
+        // this log line is the only trace of why.
+        const err = e as ConnectorError;
+        ctx.log(`order ${o.AmazonOrderId}: line items not fetched (${err.class}): ${err.message}`);
       }
 
       out.push({

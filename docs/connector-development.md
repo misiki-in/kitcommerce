@@ -6,8 +6,8 @@ model. Adding one touches **two files**.
 
 ## 1. The connector
 
-Create `src/connectors/<name>.ts` implementing `MarketplaceConnector` from
-[`../src/connector.ts`](../src/connector.ts):
+Create `src/lib/server/connectors/<name>.ts` implementing `MarketplaceConnector`
+from [`../src/lib/server/connector.ts`](../src/lib/server/connector.ts):
 
 ```ts
 export const amazon: MarketplaceConnector = {
@@ -27,7 +27,7 @@ profile, and a logger. **Never log credentials** — the logger is not filtered.
 ## 2. The registry
 
 ```ts
-// src/connectors/index.ts
+// src/lib/server/connectors/index.ts
 import { amazon } from "./amazon";
 export const connectors = { flipkart, ebay, meesho, etsy, amazon };
 ```
@@ -57,6 +57,7 @@ const manifest: Manifest = {
   ],
   rateLimits: { requestsPerSecond: 5, burst: 10 },
   docsUrl: "https://developer-docs.amazon.com/sp-api/",
+  setupGuide: "https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/amazon.md",
 };
 ```
 
@@ -164,7 +165,11 @@ Your `updatePrice` receives the already-transformed `priceCents`.
 1. Manifest with honest `capabilities` and complete `requiredFields`
 2. Mock path for every method
 3. Live path with correct error classification
-4. One line in `src/connectors/index.ts`
+4. One line in `src/lib/server/connectors/index.ts`
 5. A row in [`connector-roadmap.md`](./connector-roadmap.md) moved to ✅
 6. `bun test` passes — the self-test validates every registered manifest
 7. Note in the connector's docblock if any live endpoint is unverified
+8. A setup guide in [`docs/setup/`](./setup/) — the manual steps a seller
+   walks to get live credentials — linked from the manifest's `setupGuide`.
+   Where credentials are issued by hand, say so in `credentialsNote`; the
+   connect dialog shows both.

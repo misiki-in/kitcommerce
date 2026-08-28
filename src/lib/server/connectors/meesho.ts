@@ -1,14 +1,22 @@
 /**
  * Meesho supplier connector.
  *
- * NOTE: Meesho's supplier API is partner-gated and its published surface is
- * thinner than Flipkart's or eBay's. The live paths below implement the
- * documented supplier-panel shape and are structured so that correcting an
- * endpoint or field name is a one-file change. Treat live mode as unverified
- * until you have run it against your own supplier credentials -- mock mode is
- * fully functional in the meantime.
+ * NOTE: Meesho's supplier API is partner-gated — the API reference arrives by
+ * email from meesholink-integration@meesho.com together with your
+ * credentials, never publicly. What integrator guides do document, and what
+ * this file follows, is the transport: production base
+ * https://merchant.meesho.com (test: https://merchant.meeshotest.in), with
+ * auth carried in the `merchant` / `security` / `timestamp` request headers
+ * plus `supplier_identifier` for aggregators. The paths themselves remain a
+ * sketch: Meesho's real surface is operation-named ("Get Shipment Order
+ * Details"), not the generic /v1/... shape below, and multi-location
+ * suppliers additionally receive a per-location refresh token this connector
+ * does not yet model. Treat live mode as unverified until you have run it
+ * against your own credentials — mock mode is fully functional in the
+ * meantime.
  *
- * Docs: https://supplier.meesho.com (partner portal, login required)
+ * Docs: emailed by meesholink-integration@meesho.com with your credentials;
+ * the Supplier Panel is https://supplier.meesho.com.
  */
 import {
   ConnectorError,
@@ -40,7 +48,8 @@ const manifest: Manifest = {
         key: "supplier_id",
         label: "Supplier / Merchant Identifier",
         secret: false,
-        help: "Issued by Meesho, not your login. From your API onboarding email.",
+        optional: true,
+        help: "From your API onboarding email. Compulsory only for aggregators / multi-location accounts; sent as the supplier_identifier header when present.",
       },
       {
         key: "api_key",
@@ -57,10 +66,11 @@ const manifest: Manifest = {
    * issues to advanced sellers, not with account login details. Tools that ask
    * for a Meesho email and password are scraping the panel and relaying the
    * OTP, which is fragile and against Meesho's terms; this asks for the real
-   * credentials instead.
+   * credentials instead. Those credentials come from Meesho's integration
+   * team by email, not from any self-serve page in the panel.
    */
   credentialsNote:
-    "Meesho login is OTP-only, so there is no password to enter. Meesho issues these API credentials to advanced sellers — request access from the Supplier Panel, then paste them here.",
+    "Meesho login is OTP-only, so there is no password to enter. API credentials are issued by hand: email meesholink-integration@meesho.com from your registered Supplier Panel email — usually alongside your OMS partner — and paste the Client ID and Secret key from Meesho's reply here.",
   regions: ["IN"],
   capabilities: {
     createProduct: true,
@@ -92,22 +102,36 @@ const manifest: Manifest = {
   ],
   rateLimits: { requestsPerSecond: 3, burst: 6 },
   docsUrl: "https://supplier.meesho.com",
+  setupGuide: "https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/meesho.md",
   sellerPortalUrl: "https://supplier.meesho.com",
 };
 
-const API = "https://api.meesho.com";
+// Integrator guides agree on these hosts; refresh tokens and credentials are
+// environment-specific, so a channel testing against meeshotest.in sets
+// config.sandbox and uses the credentials Meesho issued for test.
+const API = "https://merchant.meesho.com";
+const API_TEST = "https://merchant.meeshotest.in";
 
 async function call(ctx: ConnectorContext, path: string, init: RequestInit = {}): Promise<any> {
   const { api_key, api_secret, supplier_id } = ctx.credentials;
   if (!api_key || !api_secret) {
     throw new ConnectorError("missing Meesho api_key/api_secret", "AUTHENTICATION");
   }
-  const res = await fetch(`${API}${path}`, {
+  const base = ctx.config.sandbox ? API_TEST : API;
+  const res = await fetch(`${base}${path}`, {
     ...init,
     headers: {
-      "X-Api-Key": api_key,
-      "X-Api-Secret": api_secret,
-      "X-Supplier-Id": supplier_id ?? "",
+      // Documented header keys: `merchant` carries the Client-id, `security`
+      // the Secret-key, plus a `timestamp`; `supplier_identifier` is
+      // compulsory only for aggregators, so it is sent only when set.
+      // Two things stay unverified until Meesho's onboarding email settles
+      // them: whether `security` wants the raw secret or a timestamped
+      // digest, and the timestamp format (epoch seconds until told
+      // otherwise). Adjust here if either turns out different.
+      merchant: api_key,
+      security: api_secret,
+      timestamp: String(Math.floor(Date.now() / 1000)),
+      ...(supplier_id ? { supplier_identifier: supplier_id } : {}),
       "Content-Type": "application/json",
       ...(init.headers ?? {}),
     },

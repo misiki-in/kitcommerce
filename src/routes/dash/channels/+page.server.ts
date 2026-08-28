@@ -52,6 +52,7 @@ export const load: PageServerLoad = async ({ locals }) => {
             authType: m.authentication.type.replace(/_/g, " "),
             rps: m.rateLimits.requestsPerSecond,
             docsUrl: m.docsUrl,
+            setupGuide: m.setupGuide,
             credentialsNote: m.credentialsNote,
             fields: m.authentication.fields,
             already: connectedNames.has(n),

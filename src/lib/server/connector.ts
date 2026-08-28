@@ -131,7 +131,13 @@ export interface Manifest {
   idPrefix: string;
   authentication: {
     type: string;
-    fields: Array<{ key: string; label: string; secret: boolean; help?: string }>;
+    /**
+     * `optional` marks a credential the connector can work without — e.g. one
+     * of two alternative auth routes. The connect form renders it as a
+     * non-required input; the connector decides at call time which route the
+     * supplied set enables.
+     */
+    fields: Array<{ key: string; label: string; secret: boolean; help?: string; optional?: boolean }>;
   };
   /**
    * How a seller obtains these credentials, when it is not simply "create them
@@ -149,6 +155,13 @@ export interface Manifest {
   rateLimits: RateLimits;
   /** Developer API reference. */
   docsUrl: string;
+  /**
+   * Step-by-step onboarding guide for this marketplace — how to open the
+   * seller account, register the app, and mint each credential the connect
+   * form asks for. Full URL, because the dashboard may be running anywhere;
+   * the canonical guides live under docs/setup/ in the repository.
+   */
+  setupGuide?: string;
   /** Where the merchant manages this marketplace. Always safe to open. */
   sellerPortalUrl?: string;
   /**

@@ -13,7 +13,7 @@ the categories Unicommerce covers as an omnichannel OMS.
 
 | Status | Meaning |
 | --- | --- |
-| ✅ Shipped | Connector exists in `src/connectors/`, mock + live paths |
+| ✅ Shipped | Connector exists in `src/lib/server/connectors/`, mock + live paths |
 | 🔜 Next | Committed for the release after the current one |
 | 📋 Planned | On the roadmap, no owner yet |
 | 🧭 Later plane | Out of core scope (see [Scope boundaries](#scope-boundaries)) |
@@ -26,14 +26,14 @@ the categories Unicommerce covers as an omnichannel OMS.
 | --- | --- | --- |
 | Flipkart | ✅ Shipped | Seller API v3 |
 | Meesho | ✅ Shipped | Supplier API, partner-gated |
-| Amazon India | 🔜 Next | SP-API; shares the SP-API client with Amazon global |
-| Myntra | 🔜 Next | PPMP partner portal |
-| Ajio | 📋 Planned | Reliance seller portal |
-| Nykaa | 📋 Planned | Beauty vertical; strict attribute schema |
+| Amazon India | ✅ Shipped | SP-API; one connector serves all Amazon marketplaces |
+| Myntra | ✅ Shipped | PPMP partner portal; live path is a partner-gated sketch |
+| Ajio | ✅ Shipped | Partner-gated sketch; POB credentials |
+| Nykaa | ✅ Shipped | Beauty vertical; strict attribute schema; partner-gated sketch |
 | Nykaa Fashion | 📋 Planned | Separate catalogue from Nykaa beauty |
-| Tata CLiQ | 📋 Planned | |
-| JioMart | 📋 Planned | |
-| Snapdeal | 📋 Planned | |
+| Tata CLiQ | ✅ Shipped | Partner-gated sketch |
+| JioMart | ✅ Shipped | Partner-gated sketch |
+| Snapdeal | ✅ Shipped | Public API docs (sellerapis.snapdeal.com) |
 | Shopclues | 📋 Planned | |
 | Limeroad | 📋 Planned | |
 | Firstcry | 📋 Planned | Kids/baby vertical |
@@ -51,9 +51,9 @@ the categories Unicommerce covers as an omnichannel OMS.
 
 | Platform | Status | Notes |
 | --- | --- | --- |
-| Blinkit | 📋 Planned | Dark-store inventory model; per-store stock, not per-warehouse |
-| Zepto | 📋 Planned | Same model as Blinkit |
-| Swiggy Instamart | 📋 Planned | |
+| Blinkit | ✅ Shipped | Dark-store model with explicit mirror/split allocation; no public API — live is a gated sketch |
+| Zepto | ✅ Shipped | Same model as Blinkit; no public API |
+| Swiggy Instamart | ✅ Shipped | Same model; no public API |
 | BigBasket | 📋 Planned | |
 | DMart Ready | 📋 Planned | |
 
@@ -67,7 +67,7 @@ the categories Unicommerce covers as an omnichannel OMS.
 | --- | --- | --- |
 | eBay | ✅ Shipped | Sell Inventory + Fulfillment API |
 | Etsy | ✅ Shipped | Open API v3 |
-| Amazon (global) | 🔜 Next | SP-API, multi-region |
+| Amazon (global) | ✅ Shipped | SP-API, multi-region (same connector as Amazon India) |
 | Walmart Marketplace | 📋 Planned | US |
 | Noon | 📋 Planned | UAE / KSA |
 | Namshi | 📋 Planned | MENA fashion |
@@ -95,6 +95,20 @@ the categories Unicommerce covers as an omnichannel OMS.
 | Target Plus | 📋 Planned | US, invite-only |
 | Best Buy Marketplace | 📋 Planned | US / CA |
 
+## Social commerce
+
+Catalogue surfaces browsed in-feed, not marketplaces — outside native-checkout
+regions they link out to your own site and return no orders, and the manifests
+declare exactly that.
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| Instagram | ✅ Shipped | Meta catalogue via Graph API; shares the catalogue with Facebook |
+| Facebook | ✅ Shipped | Same catalogue, second surface |
+| TikTok Shop | ✅ Shipped | Full marketplace with own checkout; not available in India |
+| Pinterest | 📋 Planned | Catalogue feeds |
+| WhatsApp Business Catalog | 📋 Planned | Rides on the same Meta catalogue plane |
+
 ## Storefront platforms — *adapters, not connectors*
 
 These are sources of truth that feed the canonical model, the same plane
@@ -105,7 +119,7 @@ Litekart occupies. They implement `PlatformAdapter`, not `MarketplaceConnector`.
 | Litekart | ✅ Shipped | First adapter |
 | Native catalogue | ✅ Shipped | Built-in; products created in OpenCommerce itself |
 | WooCommerce | 🔜 Next | REST API v3 |
-| Shopify | 🔜 Next | Admin GraphQL |
+| Shopify | 🔜 Next | Admin GraphQL. The *outbound* Shopify connector (push a catalogue INTO a Shopify store) already shipped in `src/lib/server/connectors/shopify.ts`; this row is the source-of-truth adapter |
 | Medusa | 📋 Planned | |
 | Vendure | 📋 Planned | |
 | Saleor | 📋 Planned | |
@@ -158,8 +172,8 @@ Ginesys POS · Zoho POS · Shopify POS · Lightspeed · Vend
 
 A new marketplace touches exactly two files:
 
-1. `src/connectors/<name>.ts` — the connector itself
-2. `src/connectors/index.ts` — one line in the registry
+1. `src/lib/server/connectors/<name>.ts` — the connector itself
+2. `src/lib/server/connectors/index.ts` — one line in the registry
 
 Nothing in the sync engine, the API, or the dashboard knows a connector's name.
 That property is what this roadmap is betting on: the list above should be able

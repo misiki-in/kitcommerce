@@ -122,17 +122,24 @@ To watch the retry ladder and dead-lettering, set a failure rate on a channel:
 Switch a channel to **live** and add credentials to hit the real API. Nothing
 above the connector changes.
 
-> **Before going live.** Only two of these APIs are fully public, and the
+> **Before going live.** Not every marketplace publishes its API, and the
 > connectors say so in their own docblocks:
 >
-> - **Verified against public docs** — Amazon (SP-API), eBay (Sell Inventory +
->   Fulfillment), Etsy (Open API v3)
-> - **Documented shape, unverified** — Flipkart (required attributes vary per
->   vertical) and every partner-gated portal: Meesho, Myntra, AJIO, JioMart,
->   Nykaa, Tata CLiQ, Snapdeal, Zepto, Instamart, Blinkit
+> - **Written against public docs** (verified 2026-08-27) — Amazon (SP-API),
+>   eBay (Sell Inventory + Fulfillment), Etsy (Open API v3), Flipkart (Seller
+>   API v3), Shopify (Admin GraphQL), Meta catalogues (Graph API), TikTok Shop
+>   (Open Platform)
+> - **Documented shape, unverified** — the partner-gated portals: Meesho,
+>   Myntra, AJIO, JioMart, Nykaa, Tata CLiQ, Snapdeal, Zepto, Instamart,
+>   Blinkit
 >
 > For the second group, expect to correct paths and field names once you have
 > real credentials — each is a one-file change. Mock mode is unaffected.
+>
+> Going live always starts with manual steps — seller accounts, app
+> registrations, credentials issued by hand. [`docs/setup/`](docs/setup/)
+> has a step-by-step guide per marketplace, and the connect dialog links the
+> right one next to its credentials form.
 
 ---
 

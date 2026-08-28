@@ -6,6 +6,11 @@
  * offer into a live listing. The connector hides that from the core -- the sync
  * engine only ever asks for "create product".
  *
+ * The remote ID the core stores is the listingId that publish returns -- the
+ * buyer-facing listing number. Offers live in a separate identifier space, so
+ * anything that needs an offerId (price updates) resolves it by SKU at call
+ * time instead of trusting a stored one.
+ *
  * Docs: https://developer.ebay.com/api-docs/sell/inventory/overview.html
  */
 import {
@@ -37,7 +42,12 @@ const manifest: Manifest = {
     fields: [
       { key: "client_id", label: "App ID (Client ID)", secret: false },
       { key: "client_secret", label: "Cert ID (Client Secret)", secret: true },
-      { key: "refresh_token", label: "User Refresh Token", secret: true },
+      {
+        key: "refresh_token",
+        label: "User Refresh Token",
+        secret: true,
+        help: "Minted when the seller approves the consent flow — the Connect button does this, or see the setup guide for the manual exchange. It is not shown anywhere in the developer portal.",
+      },
     ],
   },
   regions: ["US", "GB", "DE", "AU", "CA", "IN"],
@@ -85,6 +95,7 @@ const manifest: Manifest = {
   ],
   rateLimits: { requestsPerSecond: 8, burst: 20 },
   docsUrl: "https://developer.ebay.com/api-docs/sell/inventory/overview.html",
+  setupGuide: "https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/ebay.md",
   sellerPortalUrl: "https://www.ebay.com/sh/ord",
   orderUrlTemplate: "https://www.ebay.com/sh/ord/details?orderid={id}",
 };
@@ -168,11 +179,68 @@ async function call(ctx: ConnectorContext, path: string, init: RequestInit = {})
     },
   });
   if (res.status === 429) {
-    throw new ConnectorError("eBay rate limit", "RATE_LIMITED", { retryAfterMs: 60_000 });
+    // eBay's binding limit is a per-API *daily* quota (about 5,000 calls/day
+    // until the free Application Growth Check raises it), not a per-second
+    // window. Against an exhausted daily quota a short retry re-fails for
+    // hours, so honour Retry-After when eBay sends it and otherwise back off
+    // fifteen minutes.
+    const retryAfterS = Number(res.headers.get("retry-after"));
+    const retryAfterMs =
+      Number.isFinite(retryAfterS) && retryAfterS > 0 ? retryAfterS * 1000 : 15 * 60_000;
+    throw new ConnectorError("eBay rate limit", "RATE_LIMITED", { retryAfterMs });
   }
   if (!res.ok) throw classifyStatus(res.status, await res.text());
   const text = await res.text();
   return text ? JSON.parse(text) : null;
+}
+
+/** Canonical millimetres to eBay centimetres, one decimal place. */
+const cm = (mm: number) => Math.round(mm) / 10;
+
+/**
+ * The complete inventory-item record for a canonical product.
+ *
+ * createOrReplaceInventoryItem is a full replacement, not a patch: any field
+ * absent from the PUT is erased from the eBay record. Create and update share
+ * this one builder so an update can never silently strip the weight,
+ * dimensions or item specifics that the create call set.
+ */
+function inventoryItemBody(p: CanonicalProduct) {
+  const a = p.attributes as any;
+  const v = p.variants[0];
+  return {
+    availability: { shipToLocationAvailability: { quantity: v?.available ?? 0 } },
+    condition: a.condition ?? "NEW",
+    product: {
+      title: p.title.slice(0, 80),
+      description: p.description,
+      brand: p.brand,
+      imageUrls: p.images.map((i) => i.url),
+      // Aspects publish verbatim as buyer-facing item specifics. The canonical
+      // attributes bag also carries connector plumbing — the ebay_*-prefixed
+      // category/policy/location IDs and the condition enum — which is routing
+      // data, not product data, so it stays off the live listing.
+      aspects: Object.fromEntries(
+        Object.entries(p.attributes)
+          .filter(([k]) => !k.startsWith("ebay_") && k !== "condition")
+          .map(([k, val]) => [k, [String(val)]]),
+      ),
+    },
+    packageWeightAndSize: {
+      weight: { value: p.weightG, unit: "GRAM" },
+      // The dimension unit enum is FEET/INCH/METER/CENTIMETER — there is no
+      // millimetre — so canonical mm is converted rather than passed through.
+      dimensions:
+        p.lengthMm > 0
+          ? {
+              length: cm(p.lengthMm),
+              width: cm(p.widthMm),
+              height: cm(p.heightMm),
+              unit: "CENTIMETER",
+            }
+          : undefined,
+    },
+  };
 }
 
 export const ebay: MarketplaceConnector = {
@@ -210,26 +278,7 @@ export const ebay: MarketplaceConnector = {
     // 1. inventory item (keyed by SKU -- naturally idempotent, PUT is a replace)
     await call(ctx, `/sell/inventory/v1/inventory_item/${encodeURIComponent(p.sku)}`, {
       method: "PUT",
-      body: JSON.stringify({
-        availability: { shipToLocationAvailability: { quantity: v?.available ?? 0 } },
-        condition: a.condition ?? "NEW",
-        product: {
-          title: p.title.slice(0, 80),
-          description: p.description,
-          brand: p.brand,
-          imageUrls: p.images.map((i) => i.url),
-          aspects: Object.fromEntries(
-            Object.entries(p.attributes).map(([k, val]) => [k, [String(val)]]),
-          ),
-        },
-        packageWeightAndSize: {
-          weight: { value: p.weightG, unit: "GRAM" },
-          dimensions:
-            p.lengthMm > 0
-              ? { length: p.lengthMm, width: p.widthMm, height: p.heightMm, unit: "MILLIMETER" }
-              : undefined,
-        },
-      }),
+      body: JSON.stringify(inventoryItemBody(p)),
     });
 
     // 2. offer
@@ -261,6 +310,8 @@ export const ebay: MarketplaceConnector = {
       { method: "POST" },
     );
 
+    // The listingId is what the core stores; the offerId survives in raw for
+    // debugging, and price updates re-resolve it by SKU rather than read it.
     return { remoteId: published?.listingId ?? offer.offerId, raw: { offer, published } };
   },
 
@@ -271,19 +322,12 @@ export const ebay: MarketplaceConnector = {
       ctx.log(`mock: updated eBay listing ${remoteId}`);
       return;
     }
-    const v = p.variants[0];
+    // The same full record as create: the PUT is a complete replacement, so a
+    // trimmed "update" payload would erase whatever it omitted — weight,
+    // dimensions, item specifics — from the live listing.
     await call(ctx, `/sell/inventory/v1/inventory_item/${encodeURIComponent(p.sku)}`, {
       method: "PUT",
-      body: JSON.stringify({
-        availability: { shipToLocationAvailability: { quantity: v?.available ?? 0 } },
-        condition: (p.attributes as any).condition ?? "NEW",
-        product: {
-          title: p.title.slice(0, 80),
-          description: p.description,
-          brand: p.brand,
-          imageUrls: p.images.map((i) => i.url),
-        },
-      }),
+      body: JSON.stringify(inventoryItemBody(p)),
     });
   },
 
@@ -309,6 +353,22 @@ export const ebay: MarketplaceConnector = {
       ctx.log(`mock: eBay price ${u.sku} -> ${money(u.priceCents)}`);
       return;
     }
+    /*
+     * The stored remoteId is the listingId that publish returned, but
+     * bulk_update_price_quantity addresses offers — a different identifier
+     * space, so passing the listingId there targets nothing. The offer is
+     * resolved by SKU at call time rather than persisted: getOffers is
+     * authoritative, and a stored offerId would go stale the moment the offer
+     * is deleted and re-created.
+     */
+    const found = await call(ctx, `/sell/inventory/v1/offer?sku=${encodeURIComponent(u.sku)}`);
+    const offer = (found?.offers ?? []).find((o: any) => o.marketplaceId === marketplaceId(ctx));
+    if (!offer?.offerId) {
+      throw new ConnectorError(
+        `no eBay offer exists for SKU ${u.sku} on ${marketplaceId(ctx)}`,
+        "NOT_FOUND",
+      );
+    }
     await call(ctx, "/sell/inventory/v1/bulk_update_price_quantity", {
       method: "POST",
       body: JSON.stringify({
@@ -317,7 +377,7 @@ export const ebay: MarketplaceConnector = {
             sku: u.sku,
             offers: [
               {
-                offerId: u.remoteId,
+                offerId: offer.offerId,
                 price: { value: money(u.priceCents), currency: u.currency },
               },
             ],
@@ -352,29 +412,74 @@ export const ebay: MarketplaceConnector = {
     }
 
     const filter = `creationdate:[${since.toISOString()}..]`;
-    const body = await call(
-      ctx,
-      `/sell/fulfillment/v1/order?filter=${encodeURIComponent(filter)}&limit=50`,
-    );
-    return (body?.orders ?? []).map((o: any) => ({
-      externalId: String(o.orderId),
-      status: String(o.orderFulfillmentStatus ?? "NEW"),
-      currency: o.pricingSummary?.total?.currency ?? "USD",
-      totalCents: Math.round(Number(o.pricingSummary?.total?.value ?? 0) * 100),
-      placedAt: o.creationDate ?? new Date().toISOString(),
-      customer: {
-        name: o.buyer?.username ?? "",
-        email: o.buyer?.buyerRegistrationAddress?.email ?? "",
-        phone: "",
-      },
-      shippingAddress: o.fulfillmentStartInstructions?.[0]?.shippingStep?.shipTo ?? {},
-      items: (o.lineItems ?? []).map((li: any) => ({
-        sku: li.sku ?? "",
-        title: li.title ?? "",
-        quantity: Number(li.quantity ?? 1),
-        priceCents: Math.round(Number(li.lineItemCost?.value ?? 0) * 100),
-        remoteItemId: String(li.lineItemId ?? ""),
-      })),
-    }));
+
+    /*
+     * getOrders pages at up to 200 orders (the documented maximum; the default
+     * is 50). The offset loop stops when the response carries no `next` link,
+     * with a hard page cap so a bad watermark — a `since` pointing years back —
+     * costs at most ten requests instead of crawling the account's entire
+     * order history against a daily call quota.
+     */
+    const PAGE_SIZE = 200;
+    const MAX_PAGES = 10;
+    const orders: any[] = [];
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const body = await call(
+        ctx,
+        `/sell/fulfillment/v1/order?filter=${encodeURIComponent(filter)}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`,
+      );
+      const batch = body?.orders ?? [];
+      orders.push(...batch);
+      if (batch.length === 0 || !body?.next) break;
+    }
+
+    return orders.map((o: any) => {
+      // shipTo is an ExtendedContact: the postal fields sit nested under
+      // contactAddress with eBay's own names, so they are mapped one by one
+      // onto the flat canonical address rather than passed through.
+      const ship = o.fulfillmentStartInstructions?.[0]?.shippingStep?.shipTo;
+      const addr = ship?.contactAddress ?? {};
+      return {
+        externalId: String(o.orderId),
+        status: String(o.orderFulfillmentStatus ?? "NEW"),
+        currency: o.pricingSummary?.total?.currency ?? "USD",
+        totalCents: Math.round(Number(o.pricingSummary?.total?.value ?? 0) * 100),
+        placedAt: o.creationDate ?? new Date().toISOString(),
+        customer: {
+          // buyer.username is the eBay handle, not a person's name — prefer
+          // the real names eBay sends before falling back to it.
+          name:
+            o.buyer?.buyerRegistrationAddress?.fullName ??
+            ship?.fullName ??
+            o.buyer?.username ??
+            "",
+          email: o.buyer?.buyerRegistrationAddress?.email ?? "",
+          phone: ship?.primaryPhone?.phoneNumber ?? "",
+        },
+        shippingAddress: {
+          line1: addr.addressLine1 ?? "",
+          line2: addr.addressLine2 ?? "",
+          city: addr.city ?? "",
+          state: addr.stateOrProvince ?? "",
+          postalCode: addr.postalCode ?? "",
+          country: addr.countryCode ?? "",
+        },
+        items: (o.lineItems ?? []).map((li: any) => {
+          const quantity = Number(li.quantity ?? 1);
+          return {
+            sku: li.sku ?? "",
+            title: li.title ?? "",
+            quantity,
+            // lineItemCost is the line TOTAL (unit price x quantity); the
+            // canonical item shape wants the per-unit price.
+            priceCents:
+              quantity > 0
+                ? Math.round((Number(li.lineItemCost?.value ?? 0) * 100) / quantity)
+                : 0,
+            remoteItemId: String(li.lineItemId ?? ""),
+          };
+        }),
+      };
+    });
   },
 };

@@ -12,11 +12,17 @@
  * matters: `requiredFields` is what the planner validates against and what the
  * product form renders, so it is the part that must be honest per platform.
  *
- * NONE OF THESE APIs IS PUBLICLY DOCUMENTED. Each is gated behind a seller or
- * partner portal login. The transports follow the common shape their onboarding
- * documentation describes; expect to correct paths and field names in this one
- * file once you have real credentials. Mock mode is fully functional and needs
- * no account.
+ * Two of the six ARE publicly documented: Snapdeal's full seller-API
+ * reference lives at sellerapis.snapdeal.com (three-header auth, documented
+ * gateway host) and Myntra's Developer Centre at mmip.myntrainfo.com
+ * documents the PPMP surface, though its API host is only revealed after
+ * developer registration. The other four — AJIO, JioMart, Nykaa, Tata CLiQ —
+ * share endpoints only after an account manager enables API access, so their
+ * transports remain sketches of the shape integrator guides describe. Expect
+ * to correct paths and header names in this one file once you hold real
+ * credentials; `config.baseUrl` and `config.extraHeaders` exist so a
+ * corrected host or an extra required header does not need a code change.
+ * Mock mode is fully functional and needs no account.
  */
 import {
   ConnectorError,
@@ -40,10 +46,26 @@ interface PortalSpec {
   displayName: string;
   baseUrl: string;
   docsUrl: string;
+  /** Seller panel, when it is a different property from the docs site. */
+  sellerPortalUrl?: string;
+  /**
+   * Every one of these marketplaces hands out API credentials by hand — an
+   * account manager, an integrations team, a registration form with a human
+   * behind it. This note is what the connect dialog shows instead of the
+   * generic "create these in the portal" line, so it must name the real
+   * route.
+   */
+  credentialsNote: string;
   idPrefix: string;
   group: string;
   status?: "ready" | "development";
   authFields: Manifest["authentication"];
+  /**
+   * Builds the auth headers from decrypted credentials. Entries with empty
+   * values are dropped before the request, so a header keyed on an optional
+   * credential simply disappears when the credential is absent. Constant
+   * headers (e.g. Myntra's x-partner-store) belong here too.
+   */
   authHeaders: (creds: Record<string, string>) => Record<string, string>;
   capabilities?: Partial<Capabilities>;
   /** Marketplace-specific required fields, appended to the common set. */
@@ -116,19 +138,41 @@ function makeConnector(spec: PortalSpec): MarketplaceConnector {
     requiredFields: [...COMMON_REQUIRED, ...spec.required],
     rateLimits: spec.rateLimits,
     docsUrl: spec.docsUrl,
-    // These portals have no public order deep-link, so the portal home is
-    // the honest destination.
-    sellerPortalUrl: spec.docsUrl,
+    setupGuide: `https://github.com/misiki-in/kitcommerce/blob/main/docs/setup/${spec.name}.md`,
+    credentialsNote: spec.credentialsNote,
+    // None of these portals has a public order deep-link, so the seller
+    // panel home is the honest destination.
+    sellerPortalUrl: spec.sellerPortalUrl ?? spec.docsUrl,
   };
 
   async function call(ctx: ConnectorContext, path: string, init: RequestInit = {}): Promise<any> {
-    const headers = spec.authHeaders(ctx.credentials);
-    if (Object.values(headers).some((v) => !v)) {
-      throw new ConnectorError(`missing ${spec.displayName} credentials`, "AUTHENTICATION");
+    // Presence is judged against the manifest, not against the built headers:
+    // a constant header must not mask a missing credential, and an optional
+    // credential must not fail the whole call.
+    for (const f of manifest.authentication.fields) {
+      if (!f.optional && !ctx.credentials[f.key]) {
+        throw new ConnectorError(
+          `missing ${spec.displayName} credential: ${f.key}`,
+          "AUTHENTICATION",
+        );
+      }
     }
-    const res = await fetch(`${spec.baseUrl}${path}`, {
+    // Most of these hosts are unverified until the marketplace shares its API
+    // spec alongside the credentials, so a channel can point at the real host
+    // — and add any header the spec turns out to demand — from config,
+    // without touching this file.
+    const base =
+      typeof ctx.config.baseUrl === "string" && ctx.config.baseUrl
+        ? ctx.config.baseUrl
+        : spec.baseUrl;
+    const headers: Record<string, string> = {};
+    const merged = { ...spec.authHeaders(ctx.credentials), ...(ctx.config.extraHeaders ?? {}) };
+    for (const [k, v] of Object.entries(merged)) {
+      if (v) headers[k] = String(v);
+    }
+    const res = await fetch(`${base}${path}`, {
       ...init,
-      headers: { ...headers, "Content-Type": "application/json", ...(init.headers ?? {}) },
+      headers: { "Content-Type": "application/json", ...headers, ...(init.headers ?? {}) },
     });
     if (res.status === 429) {
       const ra = Number(res.headers.get("retry-after") ?? 60);
@@ -317,21 +361,53 @@ function makeConnector(spec: PortalSpec): MarketplaceConnector {
 export const myntra = makeConnector({
   name: "myntra",
   displayName: "Myntra",
+  // Myntra's Developer Centre (mmip.myntrainfo.com) documents the PPMP v4
+  // surface publicly but never discloses the API host — that lives inside the
+  // gated Postman reference issued after developer registration. This host is
+  // a placeholder; set config.baseUrl once Myntra's registration reply names
+  // the real one. Note also that PPMP v4's order flow is push-shaped: Myntra
+  // calls the partner's Create/Update Order endpoint (integrators register a
+  // webhook token with Myntra), and integrator docs say no SKU-pull API
+  // exists — so the shared polling listOrders is a sketch that will likely
+  // need replacing with an inbound receiver.
   baseUrl: "https://api.myntra.com/ppmp",
-  docsUrl: "https://partners.myntra.com",
+  docsUrl: "https://mmip.myntrainfo.com",
+  sellerPortalUrl: "https://partnerportal.myntra.com",
+  credentialsNote:
+    "Myntra issues API credentials by hand: after seller onboarding at partners.myntrainfo.com, ask your account manager — or file the registration request at mmip.myntrainfo.com — to enable PPMP APIs, and you receive a Merchant ID and Secret Key. Your Warehouse ID is under Operational Reports in the Partner Portal.",
   idPrefix: "MYN",
   group: "India — fashion & beauty",
   authFields: {
-    type: "oauth2_client_credentials",
+    type: "api_key",
     fields: [
-      { key: "seller_id", label: "Seller ID", secret: false },
-      { key: "client_id", label: "Client ID", secret: false },
-      { key: "client_secret", label: "Client Secret", secret: true },
+      {
+        key: "merchant_id",
+        label: "Merchant ID",
+        secret: false,
+        help: "Issued when Myntra enables PPMP APIs — OMS migration tickets sometimes call it Store Code / Merchant ID",
+      },
+      {
+        key: "secret_key",
+        label: "Secret Key",
+        secret: true,
+        help: "Shared alongside the Merchant ID by the Myntra team",
+      },
+      {
+        key: "warehouse_id",
+        label: "Warehouse ID",
+        secret: false,
+        optional: true,
+        help: "Partner Portal > Operational Reports — not yet sent on any request; will become required once the inventory payload shape is confirmed",
+      },
     ],
   },
+  // x-partner-store is documented as mandatory on PPMP v4 (seen on the
+  // discount API). How the Merchant ID and Secret Key travel is only shown in
+  // the gated Postman reference, so those two header names are a sketch.
   authHeaders: (c) => ({
-    "X-Seller-Id": c.seller_id ?? "",
-    Authorization: `Basic ${Buffer.from(`${c.client_id ?? ""}:${c.client_secret ?? ""}`).toString("base64")}`,
+    "x-partner-store": "myntra",
+    "merchant-id": c.merchant_id ?? "",
+    "secret-key": c.secret_key ?? "",
   }),
   required: [
     {
@@ -360,7 +436,10 @@ export const myntra = makeConnector({
       help: "Required on all apparel listings",
     },
   ],
-  rateLimits: { requestsPerSecond: 4, burst: 8 },
+  // Documented on PPMP v4: inventory pushes go in batches of 10 with a limit
+  // of 100 requests per minute — so hold the connector under ~1.5 rps rather
+  // than let a burst cross the documented ceiling.
+  rateLimits: { requestsPerSecond: 1.5, burst: 3 },
   paths: { create: "/v1/styles", update: "/v1/styles" },
   extend: (p) => ({
     style_code: p.sku,
@@ -375,22 +454,38 @@ export const myntra = makeConnector({
 export const ajio = makeConnector({
   name: "ajio",
   displayName: "AJIO",
+  // No AJIO API host is public anywhere — endpoints arrive with the POB
+  // credential email from the account manager. Placeholder; set
+  // config.baseUrl to the host that email names.
   baseUrl: "https://api.ajio.com/seller",
   docsUrl: "https://seller.ajio.com",
+  credentialsNote:
+    "AJIO has no self-serve API programme. In Seller Central create a POB user under Account > Modify Account Details (the ID starts with DV), then ask your AJIO account manager or POC to issue the API password for it.",
   idPrefix: "AJO",
   group: "India — fashion & beauty",
   authFields: {
-    type: "api_key",
+    type: "credentials",
     fields: [
-      { key: "vendor_code", label: "Vendor Code", secret: false },
-      { key: "api_key", label: "API Key", secret: true },
-      { key: "api_secret", label: "API Secret", secret: true },
+      {
+        key: "pob_user_id",
+        label: "POB User ID",
+        secret: false,
+        help: "Alphanumeric, starts with DV — created in Seller Central under Account > Modify Account Details",
+      },
+      {
+        key: "api_password",
+        label: "API Password",
+        secret: true,
+        help: "Issued for the POB user by your AJIO account manager",
+      },
     ],
   },
+  // AJIO documents the credential pair (POB User ID + API Password) but not
+  // the transport — these header names are a sketch until the spec arrives
+  // with the credentials; config.extraHeaders can add whatever it demands.
   authHeaders: (c) => ({
-    "X-Vendor-Code": c.vendor_code ?? "",
-    "X-Api-Key": c.api_key ?? "",
-    "X-Api-Secret": c.api_secret ?? "",
+    "pob-user-id": c.pob_user_id ?? "",
+    "api-password": c.api_password ?? "",
   }),
   required: [
     {
@@ -416,15 +511,32 @@ export const ajio = makeConnector({
 export const jiomart = makeConnector({
   name: "jiomart",
   displayName: "JioMart",
+  // Nothing about JioMart's API transport is public — no docs, no host, no
+  // header names; integrator guides say only that credentials come from the
+  // category manager. Everything below is a sketch kept so live mode fails
+  // loudly rather than silently; correct via config.baseUrl /
+  // config.extraHeaders once JioMart's integration team shares the spec.
   baseUrl: "https://api.jiomart.com/seller",
   docsUrl: "https://seller.jiomart.com",
+  credentialsNote:
+    "JioMart issues API credentials only through your assigned category manager — there are no self-serve keys. Registered sellers should write from their registered email to Seller.Support@jiomart.com to be routed to the right contact.",
   idPrefix: "JIO",
   group: "India — horizontal",
   authFields: {
     type: "api_key",
     fields: [
-      { key: "seller_id", label: "Seller ID", secret: false },
-      { key: "api_key", label: "API Key", secret: true },
+      {
+        key: "seller_id",
+        label: "Seller ID",
+        secret: false,
+        help: "Visible in the JioMart seller portal after approval",
+      },
+      {
+        key: "api_key",
+        label: "API Key",
+        secret: true,
+        help: "As issued by your JioMart category manager — JioMart's own field names are not public, so match whatever the credential email calls it",
+      },
     ],
   },
   authHeaders: (c) => ({
@@ -459,20 +571,44 @@ export const jiomart = makeConnector({
 export const nykaa = makeConnector({
   name: "nykaa",
   displayName: "Nykaa",
+  // No Nykaa API host is published anywhere — endpoints are shared only with
+  // approved vendors. Placeholder; set config.baseUrl to what the Nykaa
+  // integration team (or the seller panel's API integration settings) gives
+  // you.
   baseUrl: "https://api.nykaa.com/seller",
   docsUrl: "https://seller.nykaa.com",
+  credentialsNote:
+    "Nykaa creates vendor logins by hand after brand approval — there is no open signup. The API Username and Password come from the seller panel's API integration settings or from your Nykaa category contact, along with your Seller ID.",
   idPrefix: "NYK",
   group: "India — fashion & beauty",
   authFields: {
-    type: "api_key",
+    type: "credentials",
     fields: [
-      { key: "seller_code", label: "Seller Code", secret: false },
-      { key: "api_key", label: "API Key", secret: true },
+      {
+        key: "api_username",
+        label: "API Username",
+        secret: false,
+        help: "Issued by the Nykaa team; also visible under the seller panel's API integration settings",
+      },
+      { key: "api_password", label: "API Password", secret: true },
+      { key: "seller_id", label: "Seller ID", secret: false },
+      {
+        key: "child_seller_id",
+        label: "Child Seller ID",
+        secret: false,
+        optional: true,
+        help: "Only for sub-accounts under a parent seller",
+      },
     ],
   },
+  // Nykaa documents the credential set (username/password/seller id) but not
+  // the transport — these header names are a sketch; config.extraHeaders can
+  // supply whatever the real spec demands.
   authHeaders: (c) => ({
-    "X-Seller-Code": c.seller_code ?? "",
-    Authorization: `Bearer ${c.api_key ?? ""}`,
+    "api-username": c.api_username ?? "",
+    "api-password": c.api_password ?? "",
+    "seller-id": c.seller_id ?? "",
+    "child-seller-id": c.child_seller_id ?? "",
   }),
   required: [
     {
@@ -502,21 +638,47 @@ export const nykaa = makeConnector({
 export const tatacliq = makeConnector({
   name: "tatacliq",
   displayName: "Tata CLiQ",
+  // No Tata CLiQ API host is published — endpoints are shared after the
+  // Account Manager activates API access on the seller account. Placeholder;
+  // set config.baseUrl to the host they name.
   baseUrl: "https://api.tatacliq.com/seller",
-  docsUrl: "https://seller.tatacliq.com",
+  docsUrl: "https://sellerzone.tatacliq.com",
+  credentialsNote:
+    "Tata CLiQ activates API access per account: give your Account Manager your Seller ID and ask for activation, collect the slave account's username and password from your SPOC, and read the Slave ID in Seller Zone under Slave Onboarding > Seller List View.",
   idPrefix: "TCQ",
   group: "India — horizontal",
   authFields: {
-    type: "oauth2_client_credentials",
+    type: "credentials",
     fields: [
-      { key: "seller_id", label: "Seller ID", secret: false },
-      { key: "client_id", label: "Client ID", secret: false },
-      { key: "client_secret", label: "Client Secret", secret: true },
+      {
+        key: "seller_id",
+        label: "Seller ID",
+        secret: false,
+        help: "Numeric, provided by the Tata CLiQ team at onboarding",
+      },
+      {
+        key: "username",
+        label: "Panel username",
+        secret: false,
+        help: "The slave account's Seller Zone login username, from your SPOC",
+      },
+      { key: "password", label: "Panel password", secret: true },
+      {
+        key: "slave_id",
+        label: "Slave ID",
+        secret: false,
+        help: "Seller Zone > Slave Onboarding > Seller List View — the part after the dash in SellerId-SlaveID",
+      },
     ],
   },
+  // Tata CLiQ documents the credential set (SellerId + slave username /
+  // password + Slave ID) but not the transport — these header names are a
+  // sketch; config.extraHeaders can supply what the real spec demands.
   authHeaders: (c) => ({
-    "X-Seller-Id": c.seller_id ?? "",
-    Authorization: `Basic ${Buffer.from(`${c.client_id ?? ""}:${c.client_secret ?? ""}`).toString("base64")}`,
+    "seller-id": c.seller_id ?? "",
+    username: c.username ?? "",
+    password: c.password ?? "",
+    "slave-id": c.slave_id ?? "",
   }),
   required: [
     { path: "attributes.brand_authorisation", label: "Brand authorisation ID", required: true,
@@ -531,25 +693,55 @@ export const tatacliq = makeConnector({
 export const snapdeal = makeConnector({
   name: "snapdeal",
   displayName: "Snapdeal",
-  baseUrl: "https://api.snapdeal.com/seller",
-  docsUrl: "https://seller.snapdeal.com",
+  // Documented production gateway. The sandbox is
+  // http://staging-apigateway.snapdeal.com (plain http) with its own token
+  // pair — point config.baseUrl at it for sandbox runs.
+  baseUrl: "https://apigateway.snapdeal.com/seller-api",
+  docsUrl: "https://sellerapis.snapdeal.com",
+  sellerPortalUrl: "https://sellers.snapdeal.com",
+  credentialsNote:
+    "Snapdeal's API is self-serve but two-step: register as an API user at sellerapis.snapdeal.com (the API team replies in about two days with a Client ID and access token), then send the seller through authorize.snapdeal.com to mint the per-seller authorization token.",
   idPrefix: "SND",
   group: "India — horizontal",
   authFields: {
     type: "api_key",
     fields: [
-      { key: "seller_code", label: "Seller Code", secret: false },
-      { key: "api_key", label: "API Key", secret: true },
+      {
+        key: "client_id",
+        label: "Client ID",
+        secret: false,
+        help: "Issued when the Snapdeal API team approves your API-user registration",
+      },
+      {
+        key: "auth_token",
+        label: "API access token",
+        secret: true,
+        help: "The X-Auth-Token from the same approval — sandbox and production tokens differ",
+      },
+      {
+        key: "seller_authz_token",
+        label: "Seller authorization token",
+        secret: true,
+        help: "Returned in the redirect when the seller logs in at authorize.snapdeal.com for your appId",
+      },
     ],
   },
+  // The three-header model is documented on sellerapis.snapdeal.com.
   authHeaders: (c) => ({
-    "X-Seller-Code": c.seller_code ?? "",
-    Authorization: `Bearer ${c.api_key ?? ""}`,
+    clientId: c.client_id ?? "",
+    "X-Auth-Token": c.auth_token ?? "",
+    "X-Seller-Authz-Token": c.seller_authz_token ?? "",
   }),
   required: [
     { path: "attributes.warranty_months", label: "Warranty (months)", required: true },
   ],
   rateLimits: { requestsPerSecond: 3, burst: 6 },
+  // Only the profile path is confirmed from the public reference (the docs
+  // host serves a mismatched *.readme.io TLS certificate, which blocks
+  // automated reads). The catalogue/inventory/price/order paths inherit the
+  // generic sketch and still need mapping to Snapdeal's documented endpoint
+  // families (e.g. the /vendorself/... fulfilment routes).
+  paths: { profile: "/seller/v2/info" },
   mockCustomer: { name: "Arjun Bhatia", city: "Jaipur", state: "Rajasthan", postalCode: "302001" },
   mockTotalCents: 74900,
 });

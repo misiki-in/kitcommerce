@@ -365,6 +365,19 @@ import LoaderCircle from "@lucide/svelte/icons/loader-circle";
                 </a>
               </p>
             {/if}
+            {#if selected.setupGuide}
+              <p class="text-xs text-muted-foreground">
+                Not sure where these come from?
+                <a
+                  href={selected.setupGuide}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex items-center gap-1"
+                >
+                  Step-by-step setup guide <ExternalLink class="size-3" />
+                </a>
+              </p>
+            {/if}
             {#each selected.fields as f (f.key)}
               <Field
                 label={f.label}
@@ -372,7 +385,7 @@ import LoaderCircle from "@lucide/svelte/icons/loader-circle";
                 type={f.secret ? "password" : "text"}
                 autocomplete="off"
                 help={f.help}
-                required
+                required={!f.optional}
               />
             {/each}
             <Field
