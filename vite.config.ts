@@ -8,6 +8,6 @@ export default defineConfig({
   // explicitly rather than "localhost": on Windows that name can resolve to
   // ::1 only, which leaves IPv4 clients (curl, scripts, some tooling) unable
   // to reach a server the browser can see.
-  server: { port: 3000, strictPort: false, host: "127.0.0.1" },
-  preview: { port: 3000, host: "127.0.0.1" },
+  server: { port: 3000, strictPort: false, host: true },
+  preview: { port: 3000, host: true },
 });

@@ -56,7 +56,7 @@
       });
     }
     if (data.counts.channels === 0) {
-      out.push({ tone: "warning", text: "No sales channels connected yet", href: "/onboarding/connect", cta: "Connect" });
+      out.push({ tone: "warning", text: "No sales channels connected yet", href: "/dash/channels", cta: "Connect" });
     }
     return out;
   });
@@ -270,7 +270,7 @@
     <Card>
       <CardContent class="flex flex-col items-center gap-3 py-10 text-center">
         <p class="text-sm text-muted-foreground">No sales channels connected yet.</p>
-        <Button href="/onboarding/connect">Connect a marketplace</Button>
+        <Button href="/dash/channels">Connect a marketplace</Button>
       </CardContent>
     </Card>
   {/if}

@@ -30,7 +30,7 @@
     textarea = false,
     rows = 4,
     required = false,
-    value = $bindable(""),
+    value = $bindable(),
     class: className,
     ...rest
   }: Props = $props();

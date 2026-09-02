@@ -1,7 +1,6 @@
 # Marketplace setup guides
 
-Mock mode needs nothing — every connector simulates its marketplace on a fresh
-clone. These guides are for the other half: taking a channel **live**, which
+These guides walk through taking a channel **live**, which
 always involves steps OpenCommerce cannot do for you — opening seller accounts,
 registering API applications, and getting credentials issued.
 

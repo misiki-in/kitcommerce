@@ -51,7 +51,7 @@
   <Card>
     <CardContent class="py-16 text-center">
       <p class="text-sm text-muted-foreground">
-        No orders yet. Mock channels generate sample orders against your real SKUs.
+        No orders yet. Click 'Import now' to pull recent orders from your connected marketplaces.
       </p>
     </CardContent>
   </Card>
@@ -73,11 +73,7 @@
         </TableHeader>
         <TableBody>
           {#each data.orders as order (order.id)}
-            <!--
-              Only a live order exists on the marketplace. Linking a mock one
-              out would land on a 404, so those rows stay inert and say why.
-            -->
-            {@const openable = !order.isMock && order.externalUrl}
+            {@const openable = Boolean(order.externalUrl)}
             <TableRow class={openable ? "cursor-pointer" : ""}>
               <TableCell class="pl-4">{@html order.mark}</TableCell>
               <TableCell>
@@ -94,7 +90,6 @@
                 {/if}
                 <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
                   {order.channelName}
-                  {#if order.isMock}<Badge variant="secondary" class="px-1.5 py-0">mock</Badge>{/if}
                 </div>
               </TableCell>
               <TableCell class="text-sm">{order.customer.name || "—"}</TableCell>
@@ -125,9 +120,7 @@
                 {:else}
                   <span
                     class="inline-flex cursor-help text-muted-foreground/40"
-                    title={order.isMock
-                      ? "Mock order — it exists only here, not on the marketplace"
-                      : `${order.marketplace} publishes no link for a single order`}
+                    title="{order.marketplace} publishes no direct web link for a single order"
                   >
                     <ExternalLink class="size-4" />
                   </span>

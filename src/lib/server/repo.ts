@@ -132,6 +132,20 @@ export interface ChannelRow {
   last_error: string;
 }
 
+export interface ImportRow {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  filename: string;
+  csv_text: string;
+  row_count: number;
+  status: string;
+  results: string;
+  created_at: number;
+  updated_at: number;
+}
+export type ImportSheetRow = ImportRow;
+
 // -------------------------------------------------------------------- repo
 
 export function createRepo(db: Db, bus: EventBus) {
@@ -267,6 +281,16 @@ export function createRepo(db: Db, bus: EventBus) {
       return db.get<ProductRow>("SELECT * FROM products WHERE id = ?", [id]);
     },
 
+    /** Hard-delete a product. Variants, images and mappings cascade automatically. */
+    deleteProduct(id: string): void {
+      db.run("DELETE FROM products WHERE id = ?", [id]);
+    },
+
+    /** Delete a single channel mapping for a product. */
+    deleteMapping(productId: string, channelId: string): void {
+      db.run("DELETE FROM product_mappings WHERE product_id = ? AND channel_id = ?", [productId, channelId]);
+    },
+
     getProductBySku(storeId: string, sku: string): ProductRow | null {
       return db.get<ProductRow>("SELECT * FROM products WHERE store_id = ? AND sku = ?", [
         storeId,
@@ -359,6 +383,8 @@ export function createRepo(db: Db, bus: EventBus) {
       }>;
       /** Omit to leave the stored images untouched. */
       images?: Array<{ url: string; alt?: string }>;
+      /** Set to false for batch imports to avoid individual event fan-out. Default: true. */
+      emitEvents?: boolean;
     }): Promise<{ id: string; created: boolean; changed: boolean }> {
       const existing = input.id
         ? repo.getProduct(input.id)
@@ -489,16 +515,19 @@ export function createRepo(db: Db, bus: EventBus) {
           );
         });
 
-        const payload = { productId: id, sku: input.sku, version };
-        if (!existing) {
-          bus.publish({ name: "product.created.v1", organizationId: input.orgId, storeId: input.storeId, payload });
-        } else {
-          bus.publish({ name: "product.updated.v1", organizationId: input.orgId, storeId: input.storeId, payload });
-          if (priceChanged) {
-            bus.publish({ name: "price.changed.v1", organizationId: input.orgId, storeId: input.storeId, payload });
-          }
-          if (stockChanged) {
-            bus.publish({ name: "inventory.changed.v1", organizationId: input.orgId, storeId: input.storeId, payload });
+        const shouldEmit = input.emitEvents ?? true;
+        if (shouldEmit) {
+          const payload = { productId: id, sku: input.sku, version };
+          if (!existing) {
+            bus.publish({ name: "product.created.v1", organizationId: input.orgId, storeId: input.storeId, payload });
+          } else {
+            bus.publish({ name: "product.updated.v1", organizationId: input.orgId, storeId: input.storeId, payload });
+            if (priceChanged) {
+              bus.publish({ name: "price.changed.v1", organizationId: input.orgId, storeId: input.storeId, payload });
+            }
+            if (stockChanged) {
+              bus.publish({ name: "inventory.changed.v1", organizationId: input.orgId, storeId: input.storeId, payload });
+            }
           }
         }
       });
@@ -554,6 +583,25 @@ export function createRepo(db: Db, bus: EventBus) {
         "UPDATE channels SET status=?, last_error=?, last_health_at=?, updated_at=? WHERE id=?",
         [status, error, now(), now(), id],
       );
+    },
+
+    updateChannel(id: string, input: { name?: string; config?: Record<string, unknown> }): void {
+      if (input.name && input.config) {
+        db.run("UPDATE channels SET name = ?, config = ?, updated_at = ? WHERE id = ?", [
+          input.name,
+          JSON.stringify(input.config),
+          now(),
+          id,
+        ]);
+      } else if (input.name) {
+        db.run("UPDATE channels SET name = ?, updated_at = ? WHERE id = ?", [input.name, now(), id]);
+      } else if (input.config) {
+        db.run("UPDATE channels SET config = ?, updated_at = ? WHERE id = ?", [
+          JSON.stringify(input.config),
+          now(),
+          id,
+        ]);
+      }
     },
 
     deleteChannel(id: string): void {
@@ -673,6 +721,20 @@ export function createRepo(db: Db, bus: EventBus) {
       return db.get<any>("SELECT * FROM sync_jobs WHERE id = ?", [id]);
     },
 
+    getBatchJobs(storeId: string, channelId: string, operation: string, createdAt: number, windowMs = 60000) {
+      return db.all<any>(
+        `SELECT j.*, p.title as product_title, p.sku as product_sku
+           FROM sync_jobs j
+           LEFT JOIN products p ON p.id = j.entity_id
+          WHERE j.store_id = ?
+            AND j.channel_id = ?
+            AND j.operation = ?
+            AND j.created_at BETWEEN ? AND ?
+          ORDER BY j.created_at ASC`,
+        [storeId, channelId, operation, createdAt - windowMs, createdAt + windowMs],
+      );
+    },
+
     jobAttempts(jobId: string) {
       return db.all<any>(
         "SELECT * FROM sync_attempts WHERE job_id = ? ORDER BY attempt ASC",
@@ -727,32 +789,103 @@ export function createRepo(db: Db, bus: EventBus) {
 
       const out: ActivityEntry[] = [];
 
+      // Group closely-timed sync jobs by channel & operation into aggregated entries
+      const groupedJobs = new Map<string, any[]>();
       for (const j of jobs) {
-        out.push({
-          kind: "sync",
-          id: j.id,
-          at: j.created_at,
-          status: j.status,
-          title: j.operation.replace(/_/g, " ").toLowerCase(),
-          detail: j.channel_name ?? j.connector ?? "",
-          error: j.last_error ?? "",
-          connector: j.connector ?? "",
-          href: `/jobs/${j.id}`,
-          meta: `attempt ${j.attempt_count}/${j.max_attempts}`,
-        });
+        // Group jobs occurring within a 60-second window for the same channel & operation
+        const timeBucket = Math.floor(j.created_at / 60000);
+        const groupKey = `${j.channel_id || j.connector}_${j.operation}_${timeBucket}`;
+        if (!groupedJobs.has(groupKey)) {
+          groupedJobs.set(groupKey, []);
+        }
+        groupedJobs.get(groupKey)!.push(j);
+      }
+
+      for (const [_, group] of groupedJobs) {
+        const first = group[0];
+        const count = group.length;
+        const failedCount = group.filter((j) => j.status === "DEAD_LETTER" || j.status === "FAILED").length;
+        const retryingCount = group.filter((j) => j.status === "RETRYING").length;
+        const succeededCount = group.filter((j) => j.status === "SUCCEEDED").length;
+
+        let status = first.status;
+        if (failedCount > 0) {
+          status = failedCount === count ? "DEAD_LETTER" : "PARTIAL";
+        } else if (retryingCount > 0) {
+          status = "RETRYING";
+        } else if (succeededCount === count) {
+          status = "SUCCEEDED";
+        }
+
+        const latest = group.reduce((prev, curr) => (curr.created_at > prev.created_at ? curr : prev), first);
+        const connector = first.connector || latest?.connector || (first.channel_name ? first.channel_name.split(" ")[0]?.toLowerCase() : "") || "";
+        const channelTitle = first.channel_name || (connector ? connector.charAt(0).toUpperCase() + connector.slice(1) : "Marketplace");
+        const opName = first.operation.replace(/_/g, " ").toLowerCase();
+
+        if (count === 1) {
+          out.push({
+            kind: "sync",
+            id: first.id,
+            at: first.created_at,
+            status: first.status,
+            title: `${opName}`,
+            detail: `${channelTitle}`,
+            error: first.last_error ?? "",
+            connector,
+            href: `/jobs/${first.id}`,
+            meta: `attempt ${first.attempt_count}/${first.max_attempts}`,
+          });
+        } else {
+          // Batched sync for multiple items on this channel
+          const hasErrors = group.find((j) => j.last_error);
+
+          out.push({
+            kind: "sync",
+            id: latest.id,
+            at: latest.created_at,
+            status,
+            title: `${channelTitle} · ${count} products ${opName.replace("product ", "")}ed`,
+            detail: `${count} items synced to ${channelTitle}${failedCount > 0 ? ` (${failedCount} failed)` : ""}`,
+            error: hasErrors ? hasErrors.last_error : "",
+            connector,
+            href: `/jobs/${latest.id}?batch=${latest.created_at}`,
+            meta: `${count} items`,
+          });
+        }
       }
       for (const a of audits) {
+        let metaObj: any = {};
+        try { metaObj = JSON.parse(a.metadata || "{}"); } catch {}
+
+        let detail = a.entity_type ? `${a.entity_type} ${a.entity_id}` : "";
+        if (a.action === "SheetImported") {
+          detail = metaObj.filename ? `${metaObj.filename} (${metaObj.importedCount} products)` : detail;
+        } else if (a.action === "ProductsDeleted" || a.action === "ProductsUnlisted") {
+          detail = metaObj.detail || `${metaObj.count || 1} product${(metaObj.count || 1) === 1 ? "" : "s"}`;
+        } else if (a.action === "ProductSyncedToMarketplace") {
+          detail = metaObj.detail || `${metaObj.channel || metaObj.connector || "Marketplace"}: ${metaObj.count || 1} items`;
+        } else if (metaObj.sku) {
+          detail = `${metaObj.sku}${metaObj.channel ? ` → ${metaObj.channel}` : ""}`;
+        }
+
+        let href = metaObj.href || "";
+        if (!href) {
+          if (a.entity_type === "product") href = `/dash/products/${a.entity_id}`;
+          else if (a.entity_type === "import_sheet") href = `/dash/products/import?id=${a.entity_id}`;
+          else if (a.entity_type === "channel") href = `/dash/channels`;
+        }
+
         out.push({
           kind: "change",
           id: a.id,
           at: a.created_at,
-          status: "",
+          status: metaObj.status || "",
           title: a.action.replace(/([A-Z])/g, " $1").trim(),
-          detail: a.entity_type ? `${a.entity_type} ${a.entity_id}` : "",
-          error: "",
-          connector: "",
-          href: a.entity_type === "product" ? `/dash/products/${a.entity_id}` : "",
-          meta: "",
+          detail,
+          error: metaObj.error || "",
+          connector: metaObj.connector || "",
+          href,
+          meta: metaObj.meta || "",
         });
       }
       for (const o of orderRows) {
@@ -844,6 +977,55 @@ export function createRepo(db: Db, bus: EventBus) {
         });
       });
       return true;
+    },
+
+    // ------------------------------------------------------------- imports
+
+    createImport(input: {
+      orgId: string;
+      storeId: string;
+      filename: string;
+      csvText: string;
+      rowCount?: number;
+    }): ImportRow {
+      const id = newId("imp");
+      db.run(
+        `INSERT INTO imports
+           (id, organization_id, store_id, filename, csv_text, row_count, status, results, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [id, input.orgId, input.storeId, input.filename, input.csvText, input.rowCount ?? 0, "UPLOADED", "{}", now(), now()],
+      );
+      return repo.getImport(id)!;
+    },
+
+    getImport(id: string): ImportRow | null {
+      return db.get<ImportRow>("SELECT * FROM imports WHERE id = ?", [id]);
+    },
+
+    updateImport(id: string, fields: Partial<Pick<ImportRow, "status" | "results">>): void {
+      const sets: string[] = [];
+      const vals: any[] = [];
+      if (fields.status !== undefined) {
+        sets.push("status = ?");
+        vals.push(fields.status);
+      }
+      if (fields.results !== undefined) {
+        sets.push("results = ?");
+        vals.push(fields.results);
+      }
+      if (sets.length === 0) return;
+      db.run(`UPDATE imports SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`, [...vals, now(), id]);
+    },
+
+    // Aliases for compatibility
+    createImportSheet(input: any) {
+      return repo.createImport(input);
+    },
+    getImportSheet(id: string) {
+      return repo.getImport(id);
+    },
+    updateImportSheet(id: string, fields: any) {
+      return repo.updateImport(id, fields);
     },
 
     // -------------------------------------------------------------- audit

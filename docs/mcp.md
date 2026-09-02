@@ -61,8 +61,8 @@ Fourteen tools, in two families.
 | `list_products` · `get_product` | The catalogue; `get_product` returns the exact shape a connector receives |
 | `create_or_update_product` | Write a product. Saving queues a sync to every channel that can take it |
 | `validate_product` | **Why is this not listing** — missing required fields, per channel |
-| `list_channels` | Connected channels, health, mock or live, how much is listed |
-| `sync_product` | Queue a sync. Live channels require explicit confirmation |
+| `list_channels` | Connected channels, health status, and how much is listed |
+| `sync_product` | Queue a sync. Publishing to channels requires explicit confirmation (`confirmLive: true`) |
 | `list_jobs` · `retry_job` | What failed, why, and put it back on the queue |
 | `list_orders` | Orders imported from the channels |
 
@@ -71,7 +71,7 @@ Fourteen tools, in two families.
 | Tool | What it gives you |
 | --- | --- |
 | `connector_sdk` | The contract: the interface, the manifest shape, the error taxonomy, and the rules that are not obvious from the types |
-| `scaffold_connector` | A complete, compiling connector with working mock mode and honest TODOs, plus the exact registry edit |
+| `scaffold_connector` | A complete, compiling connector scaffold with honest TODOs, plus the exact registry edit |
 
 ---
 
@@ -91,8 +91,7 @@ A session looks like this:
 > `bun test`.
 
 The scaffold is not a sketch. It compiles, it registers, and it passes the
-self-test's manifest assertions as generated — the mock path is complete, so
-the new channel is demonstrable before you have credentials for it. What it
+self-test's manifest assertions as generated. What it
 cannot know is the marketplace's real endpoints and real required fields, and
 it says so in TODOs rather than guessing.
 
@@ -119,11 +118,9 @@ patterns it greps the API routes for, so the guarantee is structural rather
 than a promise. An assistant is a worse place to leak a secret than a browser
 is — it may quote it back, paste it into a file, or hand it to another tool.
 
-**It will not publish to a real marketplace on its own.** Channels in mock mode
-sync freely. If any channel is in **live** mode, `sync_product` refuses and
-names the channels, and only proceeds when called again with
-`confirmLive: true`. An assistant that misreads an instruction should not be
-able to push your catalogue to Amazon by itself.
+**It will not publish to a real marketplace on its own.** When channels are configured,
+`sync_product` requires explicit confirmation (`confirmLive: true`). An assistant that
+misreads an instruction should not be able to push your catalogue to a marketplace by itself.
 
 **It does not write source files.** `scaffold_connector` returns text. Your
 assistant already has editor tools and should use them, so that every file

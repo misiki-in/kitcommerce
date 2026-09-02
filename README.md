@@ -66,8 +66,7 @@ the other direction.
   category inference (your own catalogue outranks the built-in taxonomy) and
   keyword extraction. Deterministic, so the same input always suggests the same
   thing and the self-test can assert it
-- **Fourteen marketplace connectors**, each with real endpoint implementations
-  *and* a mock mode that needs no seller account:
+- **Fourteen marketplace connectors**, each with real direct API implementations:
 
   | | |
   | --- | --- |
@@ -97,33 +96,9 @@ Each has a seam waiting for it — see [Design decisions](#design-decisions).
 
 ---
 
-## Mock mode
+## Connector verification
 
-Every connector ships a simulator, so the entire pipeline is demonstrable
-offline:
-
-```
-[flipkart] mock: created Flipkart listing FKS1B2KOO0 for MSK-SAREE-001
-[meesho]   mock: created Meesho catalog MSH1B2KOO0 with 2 variation(s)
-[ebay]     mock: published eBay listing EBAY1B2KOO0 for MSK-SAREE-001
-[etsy]     mock: created Etsy listing ETSY1B2KOO0 for MSK-SAREE-001
-```
-
-Remote IDs are derived from the SKU rather than random, so retrying a job
-produces the same remote ID — the idempotency guarantee is observable, not just
-asserted.
-
-To watch the retry ladder and dead-lettering, set a failure rate on a channel:
-
-```json
-{ "mockFailureRate": 0.4 }
-```
-
-Switch a channel to **live** and add credentials to hit the real API. Nothing
-above the connector changes.
-
-> **Before going live.** Not every marketplace publishes its API, and the
-> connectors say so in their own docblocks:
+> **Marketplace API surface verification.** Connectors declare their status in their manifests:
 >
 > - **Written against public docs** (verified 2026-08-27) — Amazon (SP-API),
 >   eBay (Sell Inventory + Fulfillment), Etsy (Open API v3), Flipkart (Seller
@@ -134,7 +109,7 @@ above the connector changes.
 >   Blinkit
 >
 > For the second group, expect to correct paths and field names once you have
-> real credentials — each is a one-file change. Mock mode is unaffected.
+> partner credentials — each is a one-file change.
 >
 > Going live always starts with manual steps — seller accounts, app
 > registrations, credentials issued by hand. [`docs/setup/`](docs/setup/)
@@ -212,7 +187,7 @@ claude mcp add opencommerce -- bun src/mcp.ts
 Fourteen tools in two families. **Operate**: read and write the catalogue,
 queue syncs, and ask `validate_product` why something is not listing. **Extend**:
 `connector_sdk` hands an assistant the connector contract, and
-`scaffold_connector` returns a compiling connector with a working mock mode —
+`scaffold_connector` returns a compiling connector scaffold —
 which is what turns "add Shopee" into a change someone can make without having
 read the codebase first.
 
@@ -263,7 +238,7 @@ src/
   ports.ts          infrastructure interfaces
   drivers/          default driver implementations
   connector.ts      marketplace connector SDK (types, errors, validation)
-  connectors/       flipkart · ebay · meesho · etsy · mock harness
+  connectors/       flipkart · ebay · meesho · etsy
   adapters/         litekart (platform adapter plane)
   repo.ts           data access, canonical assembly, change detection
   auth.ts           identity, sessions, the authz chokepoint

@@ -6,16 +6,15 @@ import { localSecrets } from "$server/drivers";
 import { newId } from "$server/ids";
 import { getConnector } from "$server/connectors";
 import { callbackUrl, oauthProvider } from "$server/oauth";
+import { getMeShops } from "$server/connectors/etsy";
 
 const secrets = localSecrets(config.secretKey);
 
 /**
  * Return leg of a marketplace OAuth handshake.
  *
- * Everything that can go wrong here lands the seller back on the channels page
- * with a message rather than on a stack trace: a denied consent screen is a
- * normal outcome, not an exception, and so is coming back to a tab whose
- * ten-minute cookie has expired.
+ * Exchanges code for tokens, saves sealed credentials, auto-detects shop details,
+ * and lands the seller back on the channels page with success indicator.
  */
 export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
   const provider = oauthProvider(params.provider);
@@ -33,19 +32,19 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
   const state = url.searchParams.get("state");
   const expectedState = cookies.get("oc_oauth_state");
   const verifier = cookies.get("oc_oauth_verifier");
+  const customClientId = cookies.get("oc_oauth_client_id");
+  const customSharedSecret = cookies.get("oc_oauth_shared_secret");
+  const customRedirectUri = cookies.get("oc_oauth_redirect_uri");
 
   const scope = { path: `/auth/${provider.connector}` };
   cookies.delete("oc_oauth_state", scope);
   cookies.delete("oc_oauth_verifier", scope);
+  cookies.delete("oc_oauth_client_id", scope);
+  cookies.delete("oc_oauth_shared_secret", scope);
+  cookies.delete("oc_oauth_redirect_uri", scope);
 
   if (!code) back("oauth_error=no+code+returned");
 
-  /*
-   * State has to match the cookie this browser was given at the start. Without
-   * it, anyone could hand a signed-in seller a crafted callback URL and attach
-   * their own marketplace account to that seller's store — the tokens would be
-   * real, the shop behind them would not be theirs.
-   */
   if (!state || !expectedState || state !== expectedState) {
     back("oauth_error=the+link+expired,+please+try+again");
   }
@@ -60,25 +59,39 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
   try {
     result = await provider.exchange({
       code: code!,
-      redirectUri: callbackUrl(provider.connector),
+      redirectUri: customRedirectUri || `${url.origin}/auth/${provider.connector}/callback`,
       verifier,
+      clientId: customClientId,
+      sharedSecret: customSharedSecret,
       params: query,
     });
   } catch (e) {
-    // The provider's own words, truncated. Its message is the only thing that
-    // distinguishes a stale code from a mismatched redirect URI.
     const detail = e instanceof Error ? e.message.slice(0, 200) : "token exchange failed";
     back(`oauth_error=${encodeURIComponent(detail)}`);
   }
 
   const manifest = getConnector(provider.connector).manifest();
 
-  /*
-   * Reconnecting replaces the credentials on the existing channel rather than
-   * adding a second one. A seller re-running this because a token expired means
-   * "fix this connection", and two rows for one shop would double every sync.
-   */
   const existing = repo.listChannels(store.id).find((c) => c.connector === provider.connector);
+
+  let initialConfig = result!.channelConfig ?? {};
+
+  // Auto-detect Etsy Shop ID if connector is Etsy
+  if (provider.connector === "etsy") {
+    try {
+      const creds = result!.credentials;
+      const ctx: any = {
+        config: {},
+        credentials: creds,
+        seller: { storeName: store.name, currency: store.currency },
+        log: () => {},
+      };
+      const shops = await getMeShops(ctx);
+      if (shops && shops[0]) {
+        initialConfig = { ...initialConfig, shop_id: String(shops[0].shop_id), shop_name: shops[0].shop_name };
+      }
+    } catch {}
+  }
 
   const channel =
     existing ??
@@ -87,10 +100,16 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
       storeId: store.id,
       connector: provider.connector,
       name: `${manifest.displayName} — ${store.name}`,
-      // A token that reaches a real shop is not something to run in mock.
       mode: "live",
-      config: result!.channelConfig ?? {},
+      config: initialConfig,
     });
+
+  if (existing && Object.keys(initialConfig).length > 0) {
+    let existingCfg = {};
+    try { existingCfg = JSON.parse(existing.config || "{}"); } catch {}
+    const mergedCfg = { ...existingCfg, ...initialConfig };
+    repo.updateChannel(channel.id, { config: JSON.stringify(mergedCfg) });
+  }
 
   const sealed = await secrets.seal(result!.credentials);
   const now = Date.now();
@@ -116,7 +135,7 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
         locals.principal!.organizationId,
         store.id,
         channel.id,
-        provider.connector,
+        channel.connector,
         manifest.authentication.type,
         sealed,
         now,
@@ -125,5 +144,17 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
     );
   }
 
-  back(`connected=${encodeURIComponent(manifest.displayName)}`);
+  repo.setChannelHealth(channel.id, "OK", "Connected via OAuth");
+
+  repo.audit({
+    orgId: locals.principal!.organizationId,
+    storeId: store.id,
+    actorUserId: locals.principal!.userId,
+    action: "channel.connected",
+    entityType: "channel",
+    entityId: channel.id,
+    metadata: { connector: provider.connector, via: "oauth" },
+  });
+
+  back(`connected=${encodeURIComponent(channel.name)}`);
 };

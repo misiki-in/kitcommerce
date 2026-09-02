@@ -54,10 +54,10 @@
  *      spelling the forbidden patterns out here would make this file fail its
  *      own check — which is exactly what happened the first time.)
  *
- *   3. Anything that can reach a real marketplace asks first. Mock channels
- *      sync freely; a live one needs `confirmLive: true`, because an assistant
- *      that misreads an instruction should not be able to publish your
- *      catalogue to Amazon on its own.
+ *   3. Anything that can reach a real marketplace asks first. Syncing to live
+ *      channels needs `confirmLive: true`, because an assistant that misreads an
+ *      instruction should not be able to publish your catalogue to a marketplace
+ *      by accident.
  */
 import { config } from "./lib/server/config";
 import { outboxEvents } from "./lib/server/drivers";
@@ -347,7 +347,7 @@ const TOOLS: Tool[] = [
   {
     name: "list_channels",
     description:
-      "Connected channels with their health, mode (mock or live) and how much of the catalogue is listed. Credentials are never returned.",
+      "Connected channels with their health status and how much of the catalogue is listed. Credentials are never returned.",
     inputSchema: schemaOf({}),
     run() {
       const { storeId } = need();
@@ -368,7 +368,7 @@ const TOOLS: Tool[] = [
   {
     name: "sync_product",
     description:
-      "Queue a sync for one product across every channel that can accept it. Channels in mock mode run against the built-in simulator. Live channels write to the real marketplace and require confirmLive.",
+      "Queue a sync for one product across every channel that can accept it. Requires confirmLive: true when channels are configured.",
     inputSchema: schemaOf(
       {
         productId: str("Product id"),
@@ -378,7 +378,7 @@ const TOOLS: Tool[] = [
           description: "Defaults to PRODUCT_UPDATE.",
         },
         confirmLive: bool(
-          "Required when any target channel is in live mode. Without it, live channels are refused.",
+          "Confirmation that you intend to publish to configured marketplace channels.",
         ),
       },
       ["productId"],
@@ -387,19 +387,13 @@ const TOOLS: Tool[] = [
       const { orgId, storeId } = need();
       if (!repo.canonical(productId)) throw new ToolError(`No product with id "${productId}".`);
 
-      /*
-       * The guard, and the reason it exists: a mock sync is a local
-       * simulation, a live one is a public listing on somebody's marketplace.
-       * An assistant should be able to do the first freely and never the
-       * second by accident.
-       */
-      const live = repo.listChannels(storeId).filter((c) => c.mode === "live");
-      if (live.length && !confirmLive) {
+      const channels = repo.listChannels(storeId);
+      if (channels.length && !confirmLive) {
         throw new ToolError(
-          `This store has ${live.length} channel(s) in live mode (${live
+          `This store has ${channels.length} configured channel(s) (${channels
             .map((c) => c.name)
-            .join(", ")}). Syncing will publish to the real marketplace. ` +
-            "Ask the person you are working with, then call again with confirmLive: true.",
+            .join(", ")}). Syncing will publish to the live marketplaces. ` +
+            "Confirm with the user, then call again with confirmLive: true.",
         );
       }
 
@@ -480,7 +474,7 @@ const TOOLS: Tool[] = [
         location: "src/lib/server/connectors/<name>.ts, registered in ./index.ts",
         interface: {
           "manifest()": "Returns the Manifest. Called constantly; keep it a constant lookup.",
-          "health(ctx)": "Returns { status, detail? }. Must answer in mock mode without credentials.",
+          "health(ctx)": "Returns { status, detail? }.",
           "createProduct(ctx, product)": "Returns { remoteId, raw? }.",
           "updateProduct(ctx, product, remoteId)": "Returns void.",
           "updateInventory(ctx, update)": "Returns void.",
@@ -494,9 +488,9 @@ const TOOLS: Tool[] = [
           group:
             "Which heading the connector picker and the landing page file this under, e.g. 'India — horizontal' or 'Social'. Declared here, not in a separate list: CONNECTOR_GROUPS is derived from these, so a new group appears simply by naming one.",
           status:
-            "'ready' means the connector has been exercised against the live API and a seller can point a real catalogue at it. 'development' means it is written and works in mock mode but its API is partner-gated or unproven. Default to 'development' — promoting it is one word once you have run it for real.",
+            "'ready' means the connector has been exercised against the live API and a seller can point a real catalogue at it. 'development' means its API is partner-gated or unproven. Default to 'development' — promoting it is one word once you have run it for real.",
           idPrefix:
-            "Uppercase prefix for mock remote IDs, e.g. 'ETSY'. Passed to mockRemoteId, and read by the landing page so it can show a realistic ID without duplicating a lookup table.",
+            "Uppercase prefix for remote IDs, e.g. 'ETSY'. Read by the landing page so it can show a realistic ID without duplicating a lookup table.",
           authentication: "{ type, fields: [{ key, label, secret }] } — drives the connect form.",
           regions: "ISO country codes this channel actually sells in.",
           capabilities:
@@ -520,8 +514,7 @@ const TOOLS: Tool[] = [
           helper: "classifyStatus(status, body) maps an HTTP status onto the taxonomy.",
         },
         rules: [
-          "Mock mode is not optional. Every operation needs a mock path so the pipeline runs on a fresh clone with no seller account.",
-          "Mock remote IDs come from mockRemoteId(prefix, sku) — derived from the SKU, never random, so retrying produces the same ID and idempotency is observable rather than merely asserted.",
+          "Every operation calls the real marketplace API endpoints with proper credentials.",
           "requiredFields must be honest. It is what the product form renders and what the planner validates; padding it blocks listings, understating it produces failed jobs.",
           "Declare a capability false rather than implementing it as a no-op. The planner will simply never call it.",
           "Never widen the canonical model for one marketplace. Translate at the boundary — a platform's private enum stays inside its own file.",
@@ -535,7 +528,7 @@ const TOOLS: Tool[] = [
   {
     name: "scaffold_connector",
     description:
-      "Generates a complete, compiling connector with a working mock mode and honest TODOs for the live paths, plus the exact registry edit. Returns source text — write it yourself with your own editor tools.",
+      "Generates a complete, compiling connector with honest TODOs for the live paths, plus the exact registry edit. Returns source text — write it yourself with your own editor tools.",
     inputSchema: schemaOf(
       {
         name: str("Registry key, lowercase, e.g. shopee"),
@@ -547,7 +540,7 @@ const TOOLS: Tool[] = [
         },
         baseUrl: str("API base URL"),
         docsUrl: str("Developer docs URL"),
-        idPrefix: str("Short uppercase prefix for mock remote IDs, e.g. SHP"),
+        idPrefix: str("Short uppercase prefix for remote IDs, e.g. SHP"),
         group: str(
           "Heading it files under in the picker and on the landing page. Reuse an existing one where it fits — call list_connectors to see them. Defaults to Global.",
         ),
@@ -577,8 +570,6 @@ const TOOLS: Tool[] = [
  * can read, or only against what the seller portal describes. Be specific —
  * every other connector in this directory is, and a merchant wiring up real
  * credentials is entitled to know which one they are dealing with.
- *
- * Mock mode is fully functional and needs no account.
  */
 import {
   ConnectorError,
@@ -593,7 +584,6 @@ import {
   type RemoteOrder,
   type RemoteProduct,
 } from "../connector";
-import { mockLatency, mockMaybeFail, mockRemoteId } from "./mock";
 
 const BASE_URL = ${q(base)};
 
@@ -691,10 +681,6 @@ export const ${name}: MarketplaceConnector = {
   manifest: () => manifest,
 
   async health(ctx) {
-    if (ctx.mode === "mock") {
-      await mockLatency(ctx);
-      return { status: "HEALTHY", detail: "mock mode" };
-    }
     try {
       await call(ctx, "/v1/seller/profile");
       return { status: "HEALTHY" };
@@ -708,14 +694,6 @@ export const ${name}: MarketplaceConnector = {
   },
 
   async createProduct(ctx, p): Promise<RemoteProduct> {
-    if (ctx.mode === "mock") {
-      await mockLatency(ctx);
-      mockMaybeFail(ctx, "createProduct");
-      // Derived from the SKU, so a retry returns this same ID.
-      const remoteId = mockRemoteId(${q(prefix)}, p.sku);
-      ctx.log(\`mock: created ${display} listing \${remoteId} for \${p.sku}\`);
-      return { remoteId };
-    }
     const body = await call(ctx, "/v1/products", {
       method: "POST",
       body: JSON.stringify(toPayload(p)),
@@ -724,12 +702,6 @@ export const ${name}: MarketplaceConnector = {
   },
 
   async updateProduct(ctx, p, remoteId) {
-    if (ctx.mode === "mock") {
-      await mockLatency(ctx);
-      mockMaybeFail(ctx, "updateProduct");
-      ctx.log(\`mock: updated ${display} listing \${remoteId}\`);
-      return;
-    }
     await call(ctx, \`/v1/products/\${encodeURIComponent(remoteId)}\`, {
       method: "PUT",
       body: JSON.stringify(toPayload(p)),
@@ -737,12 +709,6 @@ export const ${name}: MarketplaceConnector = {
   },
 
   async updateInventory(ctx, u: InventoryUpdate) {
-    if (ctx.mode === "mock") {
-      await mockLatency(ctx);
-      mockMaybeFail(ctx, "updateInventory");
-      ctx.log(\`mock: ${display} stock \${u.sku} -> \${u.available}\`);
-      return;
-    }
     await call(ctx, "/v1/inventory", {
       method: "POST",
       body: JSON.stringify({ seller_sku: u.sku, stock: u.available }),
@@ -750,12 +716,6 @@ export const ${name}: MarketplaceConnector = {
   },
 
   async updatePrice(ctx, u: PriceUpdate) {
-    if (ctx.mode === "mock") {
-      await mockLatency(ctx);
-      mockMaybeFail(ctx, "updatePrice");
-      ctx.log(\`mock: ${display} price \${u.sku} -> \${money(u.priceCents)}\`);
-      return;
-    }
     await call(ctx, "/v1/prices", {
       method: "POST",
       body: JSON.stringify({ seller_sku: u.sku, price: money(u.priceCents) }),
@@ -765,29 +725,6 @@ ${
   orderImport
     ? `
   async listOrders(ctx, since): Promise<RemoteOrder[]> {
-    if (ctx.mode === "mock") {
-      await mockLatency(ctx);
-      const skus: string[] = ctx.config.mockOrderSkus ?? [];
-      return skus.slice(0, 1).map((sku, i) => ({
-        externalId: \`${prefix}-ORD-\${mockRemoteId("", sku)}-\${i}\`,
-        status: "NEW",
-        currency: "INR",
-        totalCents: 99900,
-        placedAt: new Date().toISOString(),
-        customer: { name: "Mock Buyer", email: "", phone: "" },
-        shippingAddress: { line1: "1 Example Road", city: "Bengaluru", country: ${q(regions[0])} },
-        items: [
-          {
-            sku,
-            title: "Mock ${display} item",
-            quantity: 1,
-            priceCents: 99900,
-            remoteItemId: \`${prefix}I-\${i}\`,
-          },
-        ],
-      }));
-    }
-
     const body = await call(
       ctx,
       \`/v1/orders?from=\${encodeURIComponent(since.toISOString())}&limit=50\`,

@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS channels (
   connector       TEXT NOT NULL,
   name            TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'UNKNOWN',
-  mode            TEXT NOT NULL DEFAULT 'mock',
+  mode            TEXT NOT NULL DEFAULT 'live',
   config          TEXT NOT NULL DEFAULT '{}',
   last_health_at  INTEGER,
   last_error      TEXT NOT NULL DEFAULT '',
@@ -327,3 +327,17 @@ CREATE TABLE IF NOT EXISTS api_changes (
   status      TEXT NOT NULL DEFAULT 'OPEN',
   created_at  INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS imports (
+  id              TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  store_id        TEXT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  filename        TEXT NOT NULL,
+  csv_text        TEXT NOT NULL,
+  row_count       INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'UPLOADED',
+  results         TEXT NOT NULL DEFAULT '{}',
+  created_at      INTEGER NOT NULL DEFAULT 0,
+  updated_at      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_imports_store ON imports(store_id, created_at DESC);

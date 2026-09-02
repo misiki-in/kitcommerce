@@ -1,7 +1,6 @@
 /**
- * Demo data: one account, a filled-in seller profile, four connected channels
- * (all four marketplaces, in mock mode) and a small catalogue with variants,
- * images and the attributes each marketplace requires.
+ * Seed script. Prepares an administrator user, one store, four channels,
+ * and a small catalogue with variants, images and attributes.
  *
  *   bun seed        then sign in as demo@opencommerce.dev / demo1234
  */
@@ -54,7 +53,7 @@ repo.updateStore(store.id, {
   currency: "INR",
 });
 
-// Four channels, all in mock mode so the pipeline runs with no credentials.
+// Four channels configured for the store.
 const channels = [
   { connector: "flipkart", name: "Flipkart — Misiki Seller", config: {} },
   { connector: "meesho", name: "Meesho — Misiki Supplier", config: {} },
@@ -74,7 +73,7 @@ for (const c of channels) {
     storeId: store.id,
     connector: c.connector,
     name: c.name,
-    mode: "mock",
+    mode: "live",
     config: c.config,
   });
 }
@@ -203,7 +202,7 @@ console.log(`
 
   sign in    ${EMAIL} / ${PASSWORD}
   store      ${store.name}
-  channels   ${channels.length} (all mock mode)
+  channels   ${channels.length}
   products   ${catalogue.length}
   events     ${published} published
   jobs       ${Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(" ")}

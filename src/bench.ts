@@ -4,7 +4,7 @@
  *   bun src/bench.ts
  *
  * Measures the parts of the pipeline WE control, with the marketplace call
- * removed (mock latency 0). Whatever this reports is the ceiling on what a
+ * removed. Whatever this reports is the ceiling on what a
  * faster language could win back.
  */
 import { rmSync } from "node:fs";
@@ -61,9 +61,8 @@ const store = repo.createStore(ORG, "Bench Store");
 
 const channel = repo.createChannel({
   orgId: ORG, storeId: store.id, connector: "flipkart",
-  name: "Flipkart bench", mode: "mock",
-  // No artificial latency: we want the language cost, not a sleep().
-  config: { mockLatencyMs: 0 },
+  name: "Flipkart bench", mode: "live",
+  config: {},
 });
 
 const save = await repo.saveProduct({
@@ -95,8 +94,7 @@ const connector = getConnector("flipkart");
 const manifest = connector.manifest();
 
 const ctx: ConnectorContext = {
-  mode: "mock",
-  config: { mockLatencyMs: 0 },
+  config: {},
   credentials: {},
   seller: {
     storeName: store.name, description: "", logoUrl: "", legalName: "Bench Pvt Ltd",
@@ -115,7 +113,7 @@ let counter = 0;
 await time("canonical assembly (3 queries + JSON parse)", N, () => repo.canonical(productId))();
 await time("manifest validation (10 required fields)", N, () =>
   missingRequiredFields(manifest, canonical))();
-await time("connector payload build + mock call", N, () =>
+await time("connector payload build", N, () =>
   connector.createProduct(ctx, canonical))();
 await time("queue enqueue (dedupe check + insert)", N, () =>
   queue.enqueue({

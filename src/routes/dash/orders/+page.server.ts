@@ -10,10 +10,6 @@ export const load: PageServerLoad = async ({ locals }) => {
   const store = repo.storesForOrg(locals.principal!.organizationId)[0];
   if (!store) redirect(303, "/onboarding/store");
 
-  // Channel mode decides whether an outbound link makes sense: a mock order
-  // has no counterpart on the marketplace, so linking to it would 404.
-  const modeByChannel = new Map(repo.listChannels(store.id).map((c) => [c.id, c.mode]));
-
   return {
     orders: repo.listOrders(store.id, 200).map((o) => ({
       id: o.id,
@@ -27,7 +23,6 @@ export const load: PageServerLoad = async ({ locals }) => {
       customer: JSON.parse(o.customer || "{}") as { name?: string; email?: string },
       items: repo.orderItems(o.id),
       mark: brandMark(o.source, 26),
-      isMock: (modeByChannel.get(o.channel_id) ?? "mock") === "mock",
       externalUrl: (() => {
         try {
           return orderUrl(getConnector(o.source).manifest(), o.external_id);

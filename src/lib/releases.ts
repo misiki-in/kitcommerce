@@ -31,7 +31,7 @@ export const RELEASES: Release[] = [
     title: "One catalogue, every marketplace",
     notes: [
       "Seventeen marketplace and social connectors, each declaring its own required fields, rate limits and capabilities.",
-      "Mock mode on every connector, so the whole system runs end to end with no marketplace credentials at all.",
+      "Direct API integration on every connector, connecting to official marketplace endpoints.",
       "Sync engine with idempotency keys and a retry ladder: a retry rebuilds byte-identical input and produces the same remote ID as the first attempt, so a retry is never a second listing.",
       "Transactional outbox for events, so a sync that commits cannot lose the notification that it did.",
       "Dashboard: overview, product wizard, orders, channels, settings, and an activity rail that refreshes as you navigate.",

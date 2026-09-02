@@ -121,13 +121,12 @@ export interface Manifest {
    * Whether a seller can point a real catalogue at this today.
    *
    * "ready" means the connector has been exercised against the live API.
-   * "development" means it is written and works in mock mode, but its API is
-   * partner-gated or unproven — the landing page greys these out and the
-   * marketing copy counts them separately. Flipping one word here promotes a
-   * connector everywhere at once.
+   * "development" means its API is partner-gated or unproven — the landing page
+   * greys these out and the marketing copy counts them separately. Flipping one
+   * word here promotes a connector everywhere at once.
    */
   status: "ready" | "development";
-  /** Prefix for mock remote IDs, e.g. "ETSY" -> "ETSY-1O28DM9-0". */
+  /** Prefix for remote IDs, e.g. "ETSY" -> "ETSY-1O28DM9-0". */
   idPrefix: string;
   authentication: {
     type: string;
@@ -231,8 +230,6 @@ export function classifyStatus(status: number, body?: string): ConnectorError {
 // ------------------------------------------------------------------ context
 
 export interface ConnectorContext {
-  /** "mock" runs against the built-in simulator; "live" hits the real API. */
-  mode: "mock" | "live";
   /** Channel-level settings (shop id, marketplace, price rules, ...). */
   config: Record<string, any>;
   /** Decrypted credentials. Never logged, never serialised to a response. */
@@ -285,9 +282,11 @@ export interface MarketplaceConnector {
   health(ctx: ConnectorContext): Promise<{ status: string; detail?: string }>;
   createProduct(ctx: ConnectorContext, p: CanonicalProduct): Promise<RemoteProduct>;
   updateProduct(ctx: ConnectorContext, p: CanonicalProduct, remoteId: string): Promise<void>;
+  deleteProduct?(ctx: ConnectorContext, remoteId: string): Promise<boolean>;
   updateInventory(ctx: ConnectorContext, u: InventoryUpdate): Promise<void>;
   updatePrice(ctx: ConnectorContext, u: PriceUpdate): Promise<void>;
   listOrders(ctx: ConnectorContext, since: Date): Promise<RemoteOrder[]>;
+  discover?(ctx: ConnectorContext): Promise<Record<string, any>>;
 }
 
 // ------------------------------------------------------------------- helpers

@@ -16,6 +16,7 @@ import { listManifests } from "./lib/server/connectors";
 import { allocateStock } from "./lib/server/connectors/quickcommerce";
 import { COMPLETE_ATTRIBUTES } from "./lib/server/fixtures";
 import { idempotencyKey } from "./lib/server/sync";
+import { createRepo } from "./lib/server/repo";
 import {
   suggestCategories,
   suggestKeywords,
@@ -33,6 +34,7 @@ const db = sqliteDb(path);
 db.exec(await Bun.file(new URL("./lib/server/db/schema.sql", import.meta.url)).text());
 const queue = sqliteQueue(db);
 const bus = outboxEvents(db);
+const repo = createRepo(db, bus);
 
 let passed = 0;
 let failed = 0;
@@ -398,7 +400,7 @@ console.log("\nconnectors are self-describing");
     true,
   );
 
-  // Mock remote IDs collide silently if two connectors share a prefix, and a
+  // Remote IDs collide silently if two connectors share a prefix, and a
   // collision looks like a sync bug rather than a registry mistake.
   check("id prefixes are unique", new Set(manifests.map((m) => m.idPrefix)).size, manifests.length);
 
@@ -445,6 +447,48 @@ console.log("\nchannel search");
 
   const names = ROADMAP_CHANNELS.map((r) => r.name);
   check("wanted-list has no duplicates", new Set(names).size, names.length);
+}
+
+console.log("\ncsv import sheet & taxonomy");
+{
+  const { parseCSV, groupSheetRows } = await import("./lib/server/import_sheet");
+  const { taxonomyIdForCategory } = await import("./lib/server/connectors/etsy/taxonomy");
+
+  const sampleCSV = `SKU,Grouped SKU,Title,Variant Price,Stock,Categories,Image Src,Attribute Name 1,Attribute Value 1
+JWS01-A,GRP01,Moissanite Cluster Earrings,75.00,10,"Earrings>Shop By Style>Cluster Earrings",https://example.com/1.jpg,Metal,925 Silver
+JWS01-B,GRP01,Moissanite Cluster Earrings,85.00,5,"Earrings>Shop By Style>Cluster Earrings",https://example.com/2.jpg,Metal,14K Gold
+JWS02,,Single Ring,120.00,2,Rings,https://example.com/ring.jpg,Stone,Diamond`;
+
+  const parsed = parseCSV(sampleCSV);
+  check("csv parser parses header and data rows", parsed.length, 3);
+  check("csv parser extracts fields accurately", parsed[0]?.SKU, "JWS01-A");
+
+  const groups = groupSheetRows(parsed, "USD");
+  check("groups multi-variant rows by Grouped SKU", groups.length, 2);
+  check("grouped product has 2 variants", groups[0]?.canonical.variants.length, 2);
+  check("standalone product becomes single variant", groups[1]?.canonical.variants.length, 1);
+  check("deduplicates images across group", groups[0]?.canonical.images.length, 2);
+
+  check("resolves cluster earrings taxonomy id", taxonomyIdForCategory("Earrings>Shop By Style>Cluster Earrings"), 1206);
+  check("resolves general rings taxonomy id", taxonomyIdForCategory("Jewelry>Rings"), 1243);
+  check("falls back to default taxonomy id on unknown category", taxonomyIdForCategory("Unknown>Category"), 1);
+
+  // Database imports table
+  db.run("INSERT INTO users (id, email, password_hash, created_at) VALUES ('usr_t', 't@e.com', 'x', 0)");
+  db.run("INSERT INTO organizations (id, name, owner_user_id, created_at) VALUES ('org_t', 'Test Org', 'usr_t', 0)");
+  db.run("INSERT INTO stores (id, organization_id, name, created_at, updated_at) VALUES ('sto_t', 'org_t', 'Test Store', 0, 0)");
+
+  const createdImport = repo.createImport({
+    orgId: "org_t",
+    storeId: "sto_t",
+    filename: "sample.csv",
+    csvText: sampleCSV,
+    rowCount: 3,
+  });
+  check("created import has imp_ prefix id", createdImport.id.startsWith("imp_"), true);
+  const fetchedImport = repo.getImport(createdImport.id);
+  check("fetches import from imports table by id", fetchedImport?.filename, "sample.csv");
+  check("import status is UPLOADED", fetchedImport?.status, "UPLOADED");
 }
 
 db.close();

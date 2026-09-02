@@ -73,11 +73,11 @@ The same values work for both connectors; paste them into each connect form you 
 | `business_id` (optional) | facebook, instagram | Business Settings → **Business info** (step 7); informational — catalogue calls never send it |
 | `access_token` | facebook, instagram | Business Settings → **System users → Generate new token**, expiry *Never*, scopes `catalog_management` + `business_management` (step 6); shown once |
 
-No Extra config JSON keys are needed for the Meta connectors (`mockOrderSkus` and `mockFailureRate` are mock-mode-only knobs shared by all connectors).
+No Extra config JSON keys are needed for the Meta connectors.
 
 ## Verify
 
-Connect the channel in the dashboard, switch it to **Live**, and hit **Test**. The health check does `GET /{catalog_id}` on `graph.facebook.com/v26.0` — a healthy result means the token can see the catalogue. Then publish one product and check it appears in Commerce Manager → catalogue → Items (batch writes are asynchronous; allow a minute).
+Connect the channel in the dashboard and hit **Test**. The health check does `GET /{catalog_id}` on `graph.facebook.com/v26.0` — a healthy result means the token can see the catalogue. Then publish one product and check it appears in Commerce Manager → catalogue → Items (batch writes are asynchronous; allow a minute).
 
 ## Notes & limits
 

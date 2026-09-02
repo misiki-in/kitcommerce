@@ -12,12 +12,8 @@ import { sqliteDb } from "./drivers/db.sqlite";
 import { sqliteQueue } from "./drivers/queue.sqlite";
 import { createRepo } from "./repo";
 import { createPlanner, createWorker } from "./sync";
-import schema from "./db/schema.sql?raw";
 
 const db = sqliteDb(config.dbPath);
-
-// Migrations run on boot so a fresh clone needs no setup step.
-db.exec(schema);
 
 export const bus = outboxEvents(db);
 export const queue = sqliteQueue(db);

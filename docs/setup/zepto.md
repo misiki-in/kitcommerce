@@ -2,7 +2,7 @@
 
 > Connector `zepto` · Seller ID + optional API key (no self-serve issuance) · Last verified against official docs: 2026-08-27
 
-Zepto has no public seller API and no self-serve onboarding. Brands apply through an interest form, are curated by category managers, and then supply stock against automatically generated purchase orders. Expect roughly 4–6 weeks from application to first live SKU. OpenCommerce's live mode for this connector stays parked until Zepto's integration team actually provisions an integration — the connector's sketched endpoints returned 404 when probed on 2026-08-27. Mock mode is fully functional today.
+Zepto has no public seller API and no self-serve onboarding. Brands apply through an interest form, are curated by category managers, and then supply stock against automatically generated purchase orders. Expect roughly 4–6 weeks from application to first live SKU. OpenCommerce's connector endpoint mapping stays parked until Zepto's integration team provisions an integration for your brand.
 
 ## Before you start
 
@@ -52,9 +52,7 @@ Track sales and stock per dark store, pricing, promotions and settlements in the
 | Extra config `locations` | JSON array of the dark-store codes Zepto assigned you, e.g. `["BLR-KOR-01", "BLR-IND-02"]`. |
 | Extra config `allocation` | `"mirror"` (default — every store sees the full quantity; correct when stores draw on one shared warehouse) or `"split"` (divide evenly across stores, remainder to the first). |
 
-## Verify
-
-Connect the channel in the dashboard and leave it in **Mock** mode — health reports HEALTHY with your configured dark-store count. If you switch to **Live** and press **Test**, the health check calls `GET https://api.zepto.co.in/seller/v1/seller/profile`, which returned 404 on 2026-08-27: expect API_FAILURE. That is the honest state — live mode stays parked until Zepto provisions a real integration for you.
+Connect the channel in the dashboard and press **Test** once credentials are provided by Zepto's integration team.
 
 ## Notes & limits
 

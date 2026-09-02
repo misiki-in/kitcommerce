@@ -107,26 +107,6 @@ if (res.status === 429) {
 
 ---
 
-## Mock mode is required
-
-Every connector must work with no credentials, so the pipeline is demonstrable
-on a fresh clone and so contributors can develop without a seller account:
-
-```ts
-if (ctx.mode === "mock") {
-  await mockLatency(ctx);
-  mockMaybeFail(ctx, "createProduct");        // honours channel mockFailureRate
-  const remoteId = mockRemoteId("AMZ", p.sku); // derived from SKU, not random
-  return { remoteId };
-}
-```
-
-Derive mock remote IDs from the SKU rather than randomly. That makes a retry
-return the same remote ID, so the idempotency guarantee is *observable* rather
-than merely claimed.
-
----
-
 ## Idempotency
 
 The core builds the key; you do not:
@@ -163,13 +143,12 @@ Your `updatePrice` receives the already-transformed `priceCents`.
 ## Checklist before opening a PR
 
 1. Manifest with honest `capabilities` and complete `requiredFields`
-2. Mock path for every method
-3. Live path with correct error classification
-4. One line in `src/lib/server/connectors/index.ts`
-5. A row in [`connector-roadmap.md`](./connector-roadmap.md) moved to ✅
-6. `bun test` passes — the self-test validates every registered manifest
-7. Note in the connector's docblock if any live endpoint is unverified
-8. A setup guide in [`docs/setup/`](./setup/) — the manual steps a seller
+2. Direct API path with correct error classification
+3. One line in `src/lib/server/connectors/index.ts`
+4. A row in [`connector-roadmap.md`](./connector-roadmap.md) moved to ✅
+5. `bun test` passes — the self-test validates every registered manifest
+6. Note in the connector's docblock if any live endpoint is unverified
+7. A setup guide in [`docs/setup/`](./setup/) — the manual steps a seller
    walks to get live credentials — linked from the manifest's `setupGuide`.
    Where credentials are issued by hand, say so in `credentialsNote`; the
    connect dialog shows both.

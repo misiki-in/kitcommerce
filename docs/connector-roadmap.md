@@ -13,7 +13,7 @@ the categories Unicommerce covers as an omnichannel OMS.
 
 | Status | Meaning |
 | --- | --- |
-| ✅ Shipped | Connector exists in `src/lib/server/connectors/`, mock + live paths |
+| ✅ Shipped | Connector exists in `src/lib/server/connectors/` |
 | 🔜 Next | Committed for the release after the current one |
 | 📋 Planned | On the roadmap, no owner yet |
 | 🧭 Later plane | Out of core scope (see [Scope boundaries](#scope-boundaries)) |

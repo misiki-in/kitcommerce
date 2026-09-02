@@ -12,6 +12,8 @@
   "scripts": {
     "dev": "bun --bun vite dev",
     "start": "bun ./build/index.js",
+    "db:migrate": "bun src/migrate.ts",
+    "migrate": "bun src/migrate.ts",
     "seed": "bun src/seed.ts",
     "reset": "bun src/reset.ts",
     "test": "bun src/selftest.ts",

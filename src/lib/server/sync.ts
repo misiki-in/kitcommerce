@@ -186,7 +186,6 @@ async function buildContext(repo: Repo, channel: ChannelRow): Promise<ConnectorC
   }
 
   return {
-    mode: channel.mode === "live" ? "live" : "mock",
     config: JSON.parse(channel.config || "{}"),
     credentials,
     seller: {
@@ -410,11 +409,6 @@ export async function importOrders(repo: Repo, storeId: string, sinceMs: number)
 
     try {
       const ctx = await buildContext(repo, channel);
-      // Give the mock simulator real SKUs so imported orders reference the
-      // merchant's actual catalogue.
-      const skus = repo.listProducts(storeId, 5).map((p) => p.sku);
-      ctx.config = { ...ctx.config, mockOrderSkus: skus };
-
       const orders = await connector.listOrders(ctx, new Date(sinceMs));
       for (const o of orders) {
         const created = repo.saveOrder({

@@ -2,7 +2,7 @@
 
 > Connector `blinkit` · Vendor ID + optional key/secret (Blinkit issues no seller API keys) · Last verified against official docs: 2026-08-27
 
-Blinkit is the closest of the quick-commerce three to self-serve: you register on the Seller Hub, pass a 7–21 day verification, get assigned dark stores, then ship stock into Blinkit's network against auto-generated purchase orders — typically 30–60 days from registration to first PO. There is still no API credential to mint: integrations happen by Blinkit whitelisting your Vendor ID for a named enabler platform, so OpenCommerce's live mode stays parked until Blinkit provisions one (the connector's sketched endpoints returned 404 when probed on 2026-08-27). Mock mode is fully functional today.
+Blinkit is the closest of the quick-commerce three to self-serve: you register on the Seller Hub, pass a 7–21 day verification, get assigned dark stores, then ship stock into Blinkit's network against auto-generated purchase orders — typically 30–60 days from registration to first PO. There is still no API credential to mint: integrations happen by Blinkit whitelisting your Vendor ID for a named enabler platform, so OpenCommerce's connector endpoint mapping stays parked until Blinkit provisions an integration for your Vendor ID.
 
 ## Before you start
 
@@ -57,9 +57,7 @@ To automate POs into an OMS (Base, Unicommerce, EasyEcom, Vinculum), ask your Bl
 | Extra config `locations` | JSON array of the dark-store codes Blinkit assigned you. |
 | Extra config `allocation` | `"mirror"` (default — full quantity to every store) or `"split"` (divide evenly, remainder to the first). |
 
-## Verify
-
-Connect the channel in the dashboard and leave it in **Mock** mode — health reports HEALTHY with your configured dark-store count. If you switch to **Live** and press **Test**, the health check calls `GET https://api.blinkit.com/seller/v1/seller/profile`, which returned 404 on 2026-08-27: expect API_FAILURE. Live mode stays parked until Blinkit whitelists an integration for your Vendor ID.
+Connect the channel in the dashboard and press **Test** once credentials/whitelisting are provided by Blinkit.
 
 ## Notes & limits
 

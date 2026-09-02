@@ -2,7 +2,7 @@
 
 > Connector `instamart` · Partner ID + optional client credentials (no self-serve issuance) · Last verified against official docs: 2026-08-27
 
-Instamart is a curated, category-manager-run marketplace: you apply via a registration form or by emailing a brand deck, negotiate commercials, get documents and catalogue approved, then dispatch stock to assigned dark stores against purchase orders. Brands typically go live in 15–25 business days. There are no API credentials to collect — Swiggy has no public developer program for Instamart — so OpenCommerce's live mode for this connector stays parked until Swiggy's integration team provisions something. Mock mode is fully functional today.
+Instamart is a curated, category-manager-run marketplace: you apply via a registration form or by emailing a brand deck, negotiate commercials, get documents and catalogue approved, then dispatch stock to assigned dark stores against purchase orders. Brands typically go live in 15–25 business days. There are no API credentials to collect — Swiggy has no public developer program for Instamart — so OpenCommerce's connector endpoint mapping stays parked until Swiggy's integration team provisions an integration for your brand.
 
 ## Before you start
 
@@ -58,9 +58,7 @@ For automated PO and inventory handling, use an integration enabler operating un
 | Extra config `locations` | JSON array of your assigned dark-store codes. |
 | Extra config `allocation` | `"mirror"` (default — full quantity to every store) or `"split"` (divide evenly, remainder to the first). |
 
-## Verify
-
-Connect the channel in the dashboard and leave it in **Mock** mode — health reports HEALTHY with your configured dark-store count. If you switch to **Live** and press **Test**, the health check calls `GET https://partner.swiggy.com/instamart/v1/seller/profile`, which (observed 2026-08-27) 302-redirects to the Brand Portal and answers 200 with an HTML shell — the connector reports API_FAILURE with a "returned text/html instead of JSON" message rather than pretending anything works. Live mode stays parked until Swiggy provisions an integration.
+Connect the channel in the dashboard and press **Test** once credentials are provided by Swiggy's integration team.
 
 ## Notes & limits
 
