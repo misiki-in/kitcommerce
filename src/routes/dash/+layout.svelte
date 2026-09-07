@@ -39,6 +39,7 @@
     { href: "/dash", label: "Overview", icon: House },
     { href: "/dash/products", label: "Products", icon: Package },
     { href: "/dash/orders", label: "Orders", icon: ShoppingBag },
+    { href: "/dash/channels", label: "Channels", icon: Plug },
   ];
 
   let activityOpen = $state(false);
@@ -258,7 +259,7 @@
     class="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 backdrop-blur sm:hidden"
     style="padding-bottom: env(safe-area-inset-bottom)"
   >
-    <ul class="grid grid-cols-3">
+    <ul class="grid grid-cols-4">
       {#each NAV as item (item.href)}
         {@const active = isActive(item.href)}
         <li>

@@ -109,11 +109,59 @@ export async function discoverAllEbayResources(ctx: ConnectorContext): Promise<E
   try {
     const res = await call(ctx, `/sell/account/v1/fulfillment_policy?marketplace_id=${mId}`);
     const list = res?.fulfillmentPolicies ?? [];
-    fulfillmentPolicies = list.map((p: any) => ({
-      id: String(p.fulfillmentPolicyId),
-      name: p.name || `Fulfillment Policy #${p.fulfillmentPolicyId}`,
-      description: p.description,
-    }));
+    fulfillmentPolicies = list
+      .filter((p: any) => p && p.fulfillmentPolicyId)
+      .map((p: any) => ({
+        id: String(p.fulfillmentPolicyId),
+        name: p.name || `Fulfillment Policy #${p.fulfillmentPolicyId}`,
+        description: p.description,
+        shippingOptionsCount: Array.isArray(p.shippingOptions) ? p.shippingOptions.length : 0,
+      }));
+
+    // If no fulfillment policies exist, or none have shipping service options, create a standard valid default fulfillment policy
+    const validPolicy = list.find((p: any) => Array.isArray(p.shippingOptions) && p.shippingOptions.length > 0);
+    if (!validPolicy) {
+      try {
+        const defaultShippingPolicy = await call(ctx, "/sell/account/v1/fulfillment_policy", {
+          method: "POST",
+          body: JSON.stringify({
+            name: `Standard Shipping (${mId}) - Auto`,
+            description: "Standard domestic tracked shipping with standard handling time",
+            marketplaceId: mId,
+            categoryTypes: [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES", default: true }],
+            handlingTime: { value: 3, unit: "DAY" },
+            shippingOptions: [
+              {
+                optionType: "DOMESTIC",
+                costType: "FLAT_RATE",
+                shippingServices: [
+                  {
+                    shippingServiceCode: mId === "EBAY_IN" ? "IN_StandardDelivery" : mId === "EBAY_GB" ? "UK_RoyalMailTracked48" : "USPSPriority",
+                    shippingCarrierCode: mId === "EBAY_IN" ? "India Post" : mId === "EBAY_GB" ? "Royal Mail" : "USPS",
+                    shippingCost: { value: "0.00", currency: ctx.seller?.currency || (mId === "EBAY_IN" ? "INR" : mId === "EBAY_GB" ? "GBP" : "USD") },
+                    freeShipping: true,
+                    buyerResponsibleForShipping: false,
+                    sortOrder: 1,
+                  },
+                ],
+              },
+            ],
+          }),
+        });
+
+        if (defaultShippingPolicy?.fulfillmentPolicyId) {
+          const newId = String(defaultShippingPolicy.fulfillmentPolicyId);
+          fulfillmentPolicies.unshift({
+            id: newId,
+            name: defaultShippingPolicy.name || "Standard Shipping - Auto",
+            description: defaultShippingPolicy.description,
+          });
+        }
+      } catch (createPolicyErr: any) {
+        // If creation error (e.g. name conflict), try fetching again or record error
+        errors.push(`Default fulfillment policy creation note: ${createPolicyErr.message}`);
+      }
+    }
   } catch (err: any) {
     errors.push(`Fulfillment policies discovery failed: ${err.message}`);
   }
@@ -242,4 +290,85 @@ export async function ensureEbayLocation(ctx: ConnectorContext, preferredKey?: s
 
   return key;
 }
+
+/**
+ * Ensures a valid fulfillment policy with at least one domestic shipping service exists.
+ */
+export async function ensureValidFulfillmentPolicy(
+  ctx: ConnectorContext,
+  preferredPolicyId?: string,
+): Promise<string> {
+  const mId = marketplaceId(ctx);
+  const candidateId = preferredPolicyId || ctx.config.ebay_fulfillment_policy_id || ctx.config.default_fulfillment_policy_id;
+
+  // 1. If candidate ID provided, test if it has shipping services
+  if (candidateId) {
+    try {
+      const pol = await call(ctx, `/sell/account/v1/fulfillment_policy/${candidateId}`);
+      if (Array.isArray(pol?.shippingOptions) && pol.shippingOptions.length > 0) {
+        return candidateId;
+      }
+    } catch {}
+  }
+
+  // 2. Fetch all fulfillment policies for this marketplace and find the first valid one
+  try {
+    const res = await call(ctx, `/sell/account/v1/fulfillment_policy?marketplace_id=${mId}`);
+    const list: any[] = res?.fulfillmentPolicies ?? [];
+    const valid = list.find((p) => Array.isArray(p.shippingOptions) && p.shippingOptions.length > 0);
+    if (valid?.fulfillmentPolicyId) {
+      const validId = String(valid.fulfillmentPolicyId);
+      ctx.config.ebay_fulfillment_policy_id = validId;
+      return validId;
+    }
+  } catch {}
+
+  // 3. Auto-create a standard valid fulfillment policy with domestic tracked shipping
+  try {
+    const shippingServiceCode =
+      mId === "EBAY_IN" ? "IN_StandardDelivery" : mId === "EBAY_GB" ? "UK_RoyalMailTracked48" : "USPSPriority";
+    const shippingCarrierCode =
+      mId === "EBAY_IN" ? "India Post" : mId === "EBAY_GB" ? "Royal Mail" : "USPS";
+    const currency = ctx.seller?.currency || (mId === "EBAY_IN" ? "INR" : mId === "EBAY_GB" ? "GBP" : "USD");
+
+    const created = await call(ctx, "/sell/account/v1/fulfillment_policy", {
+      method: "POST",
+      body: JSON.stringify({
+        name: `Standard Shipping (${mId}) - Auto`,
+        description: "Standard domestic tracked shipping with standard handling time",
+        marketplaceId: mId,
+        categoryTypes: [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES", default: true }],
+        handlingTime: { value: 3, unit: "DAY" },
+        shippingOptions: [
+          {
+            optionType: "DOMESTIC",
+            costType: "FLAT_RATE",
+            shippingServices: [
+              {
+                shippingServiceCode,
+                shippingCarrierCode,
+                shippingCost: { value: "0.00", currency },
+                freeShipping: true,
+                buyerResponsibleForShipping: false,
+                sortOrder: 1,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (created?.fulfillmentPolicyId) {
+      const createdId = String(created.fulfillmentPolicyId);
+      ctx.config.ebay_fulfillment_policy_id = createdId;
+      return createdId;
+    }
+  } catch (err: any) {
+    console.warn(`[eBay ensureValidFulfillmentPolicy] Warning: ${err.message}`);
+  }
+
+  return candidateId || "";
+}
+
+
 

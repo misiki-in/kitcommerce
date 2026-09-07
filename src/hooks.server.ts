@@ -12,7 +12,7 @@ const PUBLIC = new Set(["/", "/login", "/signup", "/logout"]);
  * which is on its way to public marketplace listings anyway; the filenames are
  * unguessable IDs rather than sequential, so they are not enumerable.
  */
-const PUBLIC_PREFIXES = ["/logos/", "/uploads/", "/channels/", "/auth/google"];
+const PUBLIC_PREFIXES = ["/logos/", "/uploads/", "/channels/", "/auth/google", "/api/webhooks/"];
 
 /**
  * Resolve the session once per request and hang it on `locals`.

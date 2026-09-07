@@ -2,7 +2,7 @@
  * eBay inventory item and offer creation/update logic.
  */
 import { money, type CanonicalProduct, type ConnectorContext, type RemoteProduct } from "../../connector";
-import { call, cm, marketplaceId, discoverAllEbayResources, ensureEbayLocation } from "./api";
+import { call, cm, marketplaceId, discoverAllEbayResources, ensureEbayLocation, ensureValidFulfillmentPolicy } from "./api";
 import { taxonomyIdForEbayCategory } from "./taxonomy";
 
 export function inventoryItemBody(p: CanonicalProduct) {
@@ -25,13 +25,26 @@ export function inventoryItemBody(p: CanonicalProduct) {
 
   const cleanAspects: Record<string, string[]> = {};
 
-  // eBay requires Brand and MPN aspects in product.aspects for catalog matching
-  const brandVal = (p.brand && p.brand.trim()) || "Unbranded";
+  // eBay Inventory API aspect requirements:
+  // - "Brand" is mandatory for almost all categories. Default to "Unbranded" if absent.
+  // - "MPN" is mandatory when Brand is provided in many categories. Default to SKU or "Does Not Apply".
+  // - eBay aspect values MUST be arrays of strings with non-empty characters.
+  const brandVal = (p.brand && String(p.brand).trim()) || "Unbranded";
+  const mpnVal = p.sku && String(p.sku).trim() ? String(p.sku).trim() : "Does Not Apply";
+
   cleanAspects["Brand"] = [brandVal];
-  cleanAspects["MPN"] = [p.sku ? String(p.sku).trim() : "Does not apply"];
+  cleanAspects["MPN"] = [mpnVal];
 
   for (const [k, rawVal] of Object.entries(p.attributes || {})) {
-    if (!k || k.startsWith("ebay_") || k.startsWith("etsy_") || ignoredKeys.has(k.toLowerCase())) {
+    const normKey = k ? k.trim() : "";
+    if (
+      !normKey ||
+      normKey.startsWith("ebay_") ||
+      normKey.startsWith("etsy_") ||
+      ignoredKeys.has(normKey.toLowerCase()) ||
+      normKey.toLowerCase() === "brand" ||
+      normKey.toLowerCase() === "mpn"
+    ) {
       continue;
     }
 
@@ -50,7 +63,7 @@ export function inventoryItemBody(p: CanonicalProduct) {
     }
 
     if (strValues.length > 0) {
-      cleanAspects[k.trim()] = strValues;
+      cleanAspects[normKey] = strValues;
     }
   }
 
@@ -70,7 +83,8 @@ export function inventoryItemBody(p: CanonicalProduct) {
     product: {
       title: p.title.slice(0, 80),
       description: p.description || p.title,
-      brand: p.brand || undefined,
+      brand: brandVal,
+      mpn: mpnVal,
       imageUrls,
       aspects: Object.keys(cleanAspects).length > 0 ? cleanAspects : undefined,
     },
@@ -132,6 +146,9 @@ export async function createProduct(ctx: ConnectorContext, p: CanonicalProduct):
       console.warn(`[eBay createProduct] Auto-discovery warning: ${discErr.message}`);
     }
   }
+
+  // Ensure fulfillment policy has at least one valid shipping option
+  fulfillmentPolicyId = await ensureValidFulfillmentPolicy(ctx, fulfillmentPolicyId);
 
   // Ensure the location exists and is registered on eBay before creating offer
   merchantLocationKey = await ensureEbayLocation(ctx, merchantLocationKey);
@@ -214,7 +231,7 @@ export async function createProduct(ctx: ConnectorContext, p: CanonicalProduct):
     }
   }
 
-  // 6. Publish offer
+  // 6. Publish offer with auto-recovery if fulfillment policy needs update
   let published: any = null;
   if (offerId) {
     try {
@@ -224,8 +241,32 @@ export async function createProduct(ctx: ConnectorContext, p: CanonicalProduct):
         { method: "POST" },
       );
       listingId = published?.listingId || listingId;
+      ctx.log(`[eBay createProduct] Successfully published offer ${offerId} -> listing ID: ${listingId}`);
     } catch (pubErr: any) {
-      console.warn(`[eBay createProduct] Offer publish warning for ${offerId}: ${pubErr.message}`);
+      const errStr = String(pubErr.message || "");
+      if (errStr.includes("25007") || errStr.includes("Fulfillment policy") || errStr.includes("shipping service option")) {
+        // Attempt recovery: re-create/resolve valid fulfillment policy, update offer, and retry publish
+        ctx.log(`[eBay createProduct] Fulfillment policy 25007 encountered. Auto-resolving valid shipping policy and retrying offer publish...`);
+        const validPolicyId = await ensureValidFulfillmentPolicy(ctx);
+        if (validPolicyId && validPolicyId !== listingPolicies.fulfillmentPolicyId) {
+          listingPolicies.fulfillmentPolicyId = validPolicyId;
+          offerBody.listingPolicies = listingPolicies;
+          await call(ctx, `/sell/inventory/v1/offer/${offerId}`, {
+            method: "PUT",
+            body: JSON.stringify(offerBody),
+          });
+          published = await call(
+            ctx,
+            `/sell/inventory/v1/offer/${offerId}/publish`,
+            { method: "POST" },
+          );
+          listingId = published?.listingId || listingId;
+          ctx.log(`[eBay createProduct] Successfully recovered and published offer ${offerId} with policy ${validPolicyId} -> listing ID: ${listingId}`);
+          return { remoteId: listingId ?? offerId ?? p.sku, raw: { offerId, listingId, published } };
+        }
+      }
+      ctx.log(`[eBay createProduct] Offer publish failed for ${offerId}: ${pubErr.message}`);
+      throw pubErr;
     }
   }
 
