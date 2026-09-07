@@ -62,12 +62,53 @@
     ""
   );
   let readinessStateId = $state<number | string>(etsyChannel?.config?.default_readiness_state_id || "1508964299419");
-  let taxonomyId = $state<number | string>(
-    (etsyChannel ? data.channelLiveOptions?.[etsyChannel.id]?.taxonomies?.[0]?.id : 1206) || 1206
-  );
+  let taxonomyId = $state<number | string>("");
   let whoMade = $state("i_did");
   let whenMade = $state("made_to_order");
   let publishImmediately = $state(false);
+
+  // eBay Channel derivation & Configuration Form State
+  const ebayChannel = $derived(data.configuredChannels.find((c) => c.connector === "ebay") ?? null);
+  let ebayFulfillmentPolicyId = $state<string>(
+    (ebayChannel ? data.channelLiveOptions?.[ebayChannel.id]?.defaultFulfillmentPolicyId : "") ||
+    ebayChannel?.config?.ebay_fulfillment_policy_id ||
+    ""
+  );
+  let ebayReturnPolicyId = $state<string>(
+    (ebayChannel ? data.channelLiveOptions?.[ebayChannel.id]?.defaultReturnPolicyId : "") ||
+    ebayChannel?.config?.ebay_return_policy_id ||
+    ""
+  );
+  let ebayPaymentPolicyId = $state<string>(
+    (ebayChannel ? data.channelLiveOptions?.[ebayChannel.id]?.defaultPaymentPolicyId : "") ||
+    ebayChannel?.config?.ebay_payment_policy_id ||
+    ""
+  );
+  let ebayMerchantLocationKey = $state<string>(
+    (ebayChannel ? data.channelLiveOptions?.[ebayChannel.id]?.defaultMerchantLocationKey : "") ||
+    ebayChannel?.config?.ebay_merchant_location_key ||
+    "DEFAULT_WAREHOUSE"
+  );
+  let ebayCategoryId = $state<string>(
+    ebayChannel?.config?.ebay_category_id || "11450"
+  );
+  let ebayCondition = $state<string>("NEW");
+
+  // Dynamic discovery states for eBay
+  let isFetchingEbay = $state(false);
+  let ebayFetchError = $state("");
+  let fetchedEbayFulfillment = $state<Array<{ id: string; name: string }>>(
+    (ebayChannel ? data.channelLiveOptions?.[ebayChannel.id]?.fulfillmentPolicies : []) || []
+  );
+  let fetchedEbayReturns = $state<Array<{ id: string; name: string; returnsAccepted?: boolean }>>(
+    (ebayChannel ? data.channelLiveOptions?.[ebayChannel.id]?.returnPolicies : []) || []
+  );
+  let fetchedEbayPayments = $state<Array<{ id: string; name: string }>>(
+    (ebayChannel ? data.channelLiveOptions?.[ebayChannel.id]?.paymentPolicies : []) || []
+  );
+  let fetchedEbayLocations = $state<Array<{ key: string; name: string }>>(
+    (ebayChannel ? data.channelLiveOptions?.[ebayChannel.id]?.locations : []) || []
+  );
 
   // Dynamic discovery states for Etsy
   let isFetchingEtsy = $state(false);
@@ -104,6 +145,26 @@
     ]) || []
   );
   let isConfigLoaded = $state(Boolean(etsyChannel && data.channelLiveOptions?.[etsyChannel.id]?.shippingProfiles?.length));
+
+  // Dynamic discovery states for Meta (Facebook & Instagram)
+  function isMeta(name: string) {
+    return name === "meta" || name === "facebook" || name === "instagram";
+  }
+
+  const metaChannel = $derived(data.configuredChannels.find((c) => isMeta(c.connector)) ?? null);
+  let metaCatalogId = $state<string>(
+    (metaChannel ? data.channelLiveOptions?.[metaChannel.id]?.catalogId : "") ||
+    metaChannel?.config?.catalog_id ||
+    ""
+  );
+  let isFetchingMeta = $state(false);
+  let metaFetchError = $state("");
+  let fetchedMetaCatalogs = $state<Array<{ id: string; name: string; vertical?: string; product_count?: number }>>(
+    (metaChannel ? data.channelLiveOptions?.[metaChannel.id]?.catalogs : []) || []
+  );
+  let fetchedMetaBusinesses = $state<Array<{ id: string; name: string }>>(
+    (metaChannel ? data.channelLiveOptions?.[metaChannel.id]?.businesses : []) || []
+  );
 
   // Generic dynamic configuration store for other channels
   let genericChannelConfigs = $state<Record<string, Record<string, string>>>({});
@@ -196,6 +257,10 @@
 
     if (etsyChannel && !isConfigLoaded) {
       fetchEtsySettings();
+    }
+
+    if (metaChannel && fetchedMetaCatalogs.length === 0) {
+      fetchMetaSettings();
     }
   });
 
@@ -306,6 +371,72 @@
       etsyFetchError = err.message || "Failed to connect to Etsy API.";
     } finally {
       isFetchingEtsy = false;
+    }
+  }
+
+  async function fetchMetaSettings() {
+    if (!metaChannel) return;
+    isFetchingMeta = true;
+    metaFetchError = "";
+    try {
+      const form = new FormData();
+      form.append("channel_id", metaChannel.id);
+      if (metaCatalogId) form.append("catalog_id", String(metaCatalogId).trim());
+
+      const res = await fetch("?/fetchChannelSettings", {
+        method: "POST",
+        body: form,
+      });
+
+      const raw = await res.text();
+      let resData: any = null;
+
+      try {
+        const result = deserialize(raw);
+        if (result.type === "success" && (result as any).data) {
+          resData = (result as any).data;
+        } else if (result.type === "failure" && (result as any).data) {
+          throw new Error((result as any).data?.error || "Failed to fetch Meta catalogs.");
+        }
+      } catch (err: any) {
+        if (err.message && !err.message.includes("deserialize")) throw err;
+        try {
+          resData = JSON.parse(raw);
+          if (resData.data) resData = resData.data;
+        } catch {}
+      }
+
+      if (!resData) {
+        throw new Error("Could not parse Meta settings response.");
+      }
+
+      if (resData.error) {
+        throw new Error(resData.error);
+      }
+
+      if (resData.catalogs?.length) {
+        fetchedMetaCatalogs = resData.catalogs;
+        if (!metaCatalogId && resData.catalogId) {
+          metaCatalogId = String(resData.catalogId);
+        } else if (!metaCatalogId && resData.catalogs[0]) {
+          metaCatalogId = String(resData.catalogs[0].id);
+        }
+      }
+
+      if (resData.businesses?.length) {
+        fetchedMetaBusinesses = resData.businesses;
+      }
+
+      if (resData.discoveryErrors?.length) {
+        const warnings = resData.discoveryErrors;
+        if (warnings.length > 0 && !resData.catalogs?.length) {
+          metaFetchError = "Meta API: " + warnings.slice(0, 2).join("; ");
+        }
+      }
+    } catch (err: any) {
+      metaFetchError = err.message || "Failed to connect to Meta Graph API.";
+    } finally {
+      isFetchingMeta = false;
     }
   }
 
@@ -481,13 +612,17 @@
         use:enhance={() => {
           startProgressTracking();
           return async ({ result, update }) => {
-            if (result.type === "success" && (result.data as any)?.success) {
-              finishProgressTracking(result.data);
-            } else {
-              if (progressTimer) clearInterval(progressTimer);
-              submitting = false;
-              await update();
+            console.log("[importSheet Form Result]", result);
+            if (result.type === "success") {
+              const resData = (result as any).data || result;
+              if (resData?.success || resData?.importedCount !== undefined) {
+                finishProgressTracking(resData);
+                return;
+              }
             }
+            if (progressTimer) clearInterval(progressTimer);
+            submitting = false;
+            await update();
           };
         }}
       >
@@ -511,6 +646,25 @@
           <input type="hidden" name="etsy_who_made" value={whoMade} />
           <input type="hidden" name="etsy_when_made" value={whenMade} />
           <input type="hidden" name="etsy_publish_immediately" value={publishImmediately ? "true" : "false"} />
+        {/if}
+
+        <!-- Backward compatible flags for eBay -->
+        <input type="hidden" name="publish_to_ebay" value={selectedChannels.includes("ebay") ? "true" : "false"} />
+        {#if selectedChannels.includes("ebay")}
+          <input type="hidden" name="ebay_fulfillment_policy_id" value={ebayFulfillmentPolicyId} />
+          <input type="hidden" name="ebay_return_policy_id" value={ebayReturnPolicyId} />
+          <input type="hidden" name="ebay_payment_policy_id" value={ebayPaymentPolicyId} />
+          <input type="hidden" name="ebay_merchant_location_key" value={ebayMerchantLocationKey} />
+          <input type="hidden" name="ebay_category_id" value={ebayCategoryId} />
+          <input type="hidden" name="ebay_condition" value={ebayCondition} />
+        {/if}
+
+        <!-- Backward compatible & dynamic config flags for Meta -->
+        <input type="hidden" name="publish_to_meta" value={selectedChannels.some((c) => isMeta(c)) ? "true" : "false"} />
+        {#if metaChannel && selectedChannels.includes(metaChannel.connector)}
+          <input type="hidden" name="meta_catalog_id" value={metaCatalogId} />
+          <input type="hidden" name={`cfg_${metaChannel.id}_catalog_id`} value={metaCatalogId} />
+          <input type="hidden" name={`cfg_meta_catalog_id`} value={metaCatalogId} />
         {/if}
 
         <!-- ═════════════════════════════════════════════════════════════ -->
@@ -832,32 +986,16 @@
                     <!-- TAXONOMY / CATEGORY -->
                     <div class="space-y-1.5">
                       <Label for="etsy_taxonomy_id" class="font-medium">
-                        Etsy Taxonomy ID / Category
-                        {#if fetchedTaxonomies.length > 0}
-                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedTaxonomies.length} available</span>
-                        {/if}
+                        Etsy Category / Taxonomy
+                        <span class="ml-1 text-[10px] font-normal text-success">✓ Auto-matched from sheet</span>
                       </Label>
-                      {#if fetchedTaxonomies.length > 0}
-                        <select
-                          id="etsy_taxonomy_id"
-                          bind:value={taxonomyId}
-                          class={selectClass}
-                        >
-                          {#each fetchedTaxonomies as t (t.id)}
-                            <option value={t.id}>
-                              {t.name} (#{t.id})
-                            </option>
-                          {/each}
-                        </select>
-                      {:else}
-                        <input
-                          id="etsy_taxonomy_id"
-                          type="text"
-                          bind:value={taxonomyId}
-                          placeholder="e.g. 1206"
-                          class={selectClass}
-                        />
-                      {/if}
+                      <input
+                        id="etsy_taxonomy_id"
+                        type="text"
+                        bind:value={taxonomyId}
+                        placeholder="Auto-matched (or enter override ID e.g. 1206)"
+                        class={selectClass}
+                      />
                     </div>
                   </div>
 
@@ -906,6 +1044,357 @@
                       </Label>
                     </div>
                   </div>
+                </CardContent>
+              </Card>
+
+            <!-- EBAY SUB-STEP -->
+            {:else if currentCh.connector === "ebay"}
+              <Card class="shadow-sm">
+                <CardHeader>
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2.5">
+                      {@html currentCh.mark}
+                      <div>
+                        <CardTitle class="text-lg">Sub-step 3.{activeSubStepIndex + 1}: {currentCh.name} Configuration</CardTitle>
+                        <CardDescription>
+                          Configure business policies (fulfillment, return, payment), inventory location, and condition.
+                        </CardDescription>
+                      </div>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent class="space-y-4">
+                  <div class="grid gap-4 sm:grid-cols-2">
+                    <!-- FULFILLMENT POLICY -->
+                    <div class="space-y-1.5">
+                      <Label for="ebay_fulfillment_policy_id" class="font-medium">
+                        Fulfillment (Shipping) Policy
+                        {#if fetchedEbayFulfillment.length > 0}
+                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedEbayFulfillment.length} available</span>
+                        {/if}
+                      </Label>
+                      {#if fetchedEbayFulfillment.length > 0}
+                        <select
+                          id="ebay_fulfillment_policy_id"
+                          bind:value={ebayFulfillmentPolicyId}
+                          class={selectClass}
+                        >
+                          {#each fetchedEbayFulfillment as p (p.id)}
+                            <option value={p.id}>
+                              {p.name} (#{p.id})
+                            </option>
+                          {/each}
+                        </select>
+                      {:else}
+                        <input
+                          id="ebay_fulfillment_policy_id"
+                          type="text"
+                          bind:value={ebayFulfillmentPolicyId}
+                          placeholder="e.g. 192837465012"
+                          class={selectClass}
+                        />
+                      {/if}
+                    </div>
+
+                    <!-- RETURN POLICY -->
+                    <div class="space-y-1.5">
+                      <Label for="ebay_return_policy_id" class="font-medium">
+                        Return Policy
+                        {#if fetchedEbayReturns.length > 0}
+                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedEbayReturns.length} available</span>
+                        {/if}
+                      </Label>
+                      {#if fetchedEbayReturns.length > 0}
+                        <select
+                          id="ebay_return_policy_id"
+                          bind:value={ebayReturnPolicyId}
+                          class={selectClass}
+                        >
+                          {#each fetchedEbayReturns as r (r.id)}
+                            <option value={r.id}>
+                              {r.name} ({r.returnsAccepted ? "Accepts returns" : "No returns"})
+                            </option>
+                          {/each}
+                        </select>
+                      {:else}
+                        <input
+                          id="ebay_return_policy_id"
+                          type="text"
+                          bind:value={ebayReturnPolicyId}
+                          placeholder="e.g. 293847561023"
+                          class={selectClass}
+                        />
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div class="grid gap-4 sm:grid-cols-2">
+                    <!-- PAYMENT POLICY -->
+                    <div class="space-y-1.5">
+                      <Label for="ebay_payment_policy_id" class="font-medium">
+                        Payment Policy
+                        {#if fetchedEbayPayments.length > 0}
+                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedEbayPayments.length} available</span>
+                        {/if}
+                      </Label>
+                      {#if fetchedEbayPayments.length > 0}
+                        <select
+                          id="ebay_payment_policy_id"
+                          bind:value={ebayPaymentPolicyId}
+                          class={selectClass}
+                        >
+                          {#each fetchedEbayPayments as pay (pay.id)}
+                            <option value={pay.id}>
+                              {pay.name} (#{pay.id})
+                            </option>
+                          {/each}
+                        </select>
+                      {:else}
+                        <input
+                          id="ebay_payment_policy_id"
+                          type="text"
+                          bind:value={ebayPaymentPolicyId}
+                          placeholder="e.g. 384756192034"
+                          class={selectClass}
+                        />
+                      {/if}
+                    </div>
+
+                    <!-- MERCHANT LOCATION KEY -->
+                    <div class="space-y-1.5">
+                      <Label for="ebay_merchant_location_key" class="font-medium">
+                        Inventory Location Key
+                        {#if fetchedEbayLocations.length > 0}
+                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedEbayLocations.length} available</span>
+                        {/if}
+                      </Label>
+                      {#if fetchedEbayLocations.length > 0}
+                        <select
+                          id="ebay_merchant_location_key"
+                          bind:value={ebayMerchantLocationKey}
+                          class={selectClass}
+                        >
+                          {#each fetchedEbayLocations as loc (loc.key)}
+                            <option value={loc.key}>
+                              {loc.name} ({loc.key})
+                            </option>
+                          {/each}
+                        </select>
+                      {:else}
+                        <input
+                          id="ebay_merchant_location_key"
+                          type="text"
+                          bind:value={ebayMerchantLocationKey}
+                          placeholder="e.g. DEFAULT_WAREHOUSE"
+                          class={selectClass}
+                        />
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div class="grid gap-4 sm:grid-cols-2">
+                    <!-- CATEGORY ID -->
+                    <div class="space-y-1.5">
+                      <Label for="ebay_category_id" class="font-medium">Default Leaf Category ID</Label>
+                      <input
+                        id="ebay_category_id"
+                        type="text"
+                        bind:value={ebayCategoryId}
+                        placeholder="e.g. 11450 (Clothing) or 281 (Jewelry)"
+                        class={selectClass}
+                      />
+                    </div>
+
+                    <!-- CONDITION -->
+                    <div class="space-y-1.5">
+                      <Label for="ebay_condition" class="font-medium">Item Condition</Label>
+                      <select id="ebay_condition" bind:value={ebayCondition} class={selectClass}>
+                        <option value="NEW">New (Brand new, unused)</option>
+                        <option value="LIKE_NEW">Like New</option>
+                        <option value="USED_EXCELLENT">Used - Excellent</option>
+                        <option value="USED_GOOD">Used - Good</option>
+                        <option value="USED_ACCEPTABLE">Used - Acceptable</option>
+                      </select>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+            <!-- META (FACEBOOK & INSTAGRAM) SUB-STEP -->
+            {:else if isMeta(currentCh.connector)}
+              <Card class="shadow-sm">
+                <CardHeader>
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2.5">
+                      {@html currentCh.mark}
+                      <div>
+                        <CardTitle class="text-lg">Sub-step 3.{activeSubStepIndex + 1}: {currentCh.name} Configuration</CardTitle>
+                        <CardDescription>
+                          Select which Meta Commerce Catalog will receive the imported products.
+                        </CardDescription>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      class="gap-1.5 text-xs"
+                      disabled={isFetchingMeta}
+                      onclick={fetchMetaSettings}
+                    >
+                      {#if isFetchingMeta}
+                        <LoaderCircle class="size-3.5 animate-spin" />
+                      {:else}
+                        <RefreshCw class="size-3.5" />
+                      {/if}
+                      Refresh Catalogs
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent class="space-y-5">
+                  {#if metaFetchError}
+                    <Alert variant="destructive" class="text-xs">
+                      <AlertCircle class="size-3.5" />
+                      <AlertDescription>{metaFetchError}</AlertDescription>
+                    </Alert>
+                  {/if}
+
+                  {#if isFetchingMeta}
+                    <div class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300">
+                      <div class="flex items-center gap-2 font-medium">
+                        <LoaderCircle class="size-3.5 animate-spin" />
+                        Fetching available catalogs from Meta Graph API…
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if fetchedMetaBusinesses.length > 0}
+                    <div class="space-y-2 rounded-xl border bg-muted/30 p-3.5">
+                      <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                          <Store class="size-3.5 text-primary" />
+                          Accessible Business Portfolios
+                        </span>
+                        <Badge variant="secondary" class="text-[10px] font-normal">
+                          {fetchedMetaBusinesses.length} {fetchedMetaBusinesses.length === 1 ? 'portfolio' : 'portfolios'}
+                        </Badge>
+                      </div>
+
+                      <div class="grid gap-2 {fetchedMetaBusinesses.length > 1 ? 'sm:grid-cols-2' : 'grid-cols-1'}">
+                        {#each fetchedMetaBusinesses as biz (biz.id)}
+                          <div class="flex items-center justify-between gap-2 rounded-lg border bg-background/80 px-3 py-2 text-xs shadow-2xs">
+                            <div class="flex items-center gap-2 min-w-0">
+                              <span class="size-2 rounded-full bg-success shrink-0"></span>
+                              <span class="font-semibold text-foreground truncate">{biz.name}</span>
+                            </div>
+                            <Badge variant="outline" class="font-mono text-[10px] shrink-0">ID: #{biz.id}</Badge>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                      <Label class="text-sm font-semibold">
+                        Select Target Catalog
+                        {#if fetchedMetaCatalogs.length > 0}
+                          <span class="ml-1.5 text-xs font-normal text-success">
+                            ✓ {fetchedMetaCatalogs.length} {fetchedMetaCatalogs.length === 1 ? 'catalog' : 'catalogs'} found
+                          </span>
+                        {/if}
+                      </Label>
+                      {#if fetchedMetaCatalogs.length > 1}
+                        <span class="text-xs text-muted-foreground">Click a catalog to select it</span>
+                      {/if}
+                    </div>
+
+                    {#if fetchedMetaCatalogs.length > 0}
+                      <div class="grid gap-3 sm:grid-cols-2">
+                        {#each fetchedMetaCatalogs as cat (cat.id)}
+                          {@const isSelected = metaCatalogId === cat.id}
+                          <button
+                            type="button"
+                            onclick={() => { metaCatalogId = cat.id; }}
+                            class="relative flex flex-col justify-between rounded-xl border p-4 text-left transition-all
+                                   {isSelected
+                                     ? 'border-primary bg-primary/5 shadow-sm ring-1 ring-primary/20'
+                                     : 'bg-card hover:border-foreground/20 hover:bg-muted/30'}"
+                          >
+                            <div class="flex items-start justify-between gap-2">
+                              <div class="space-y-1">
+                                <div class="flex items-center gap-1.5">
+                                  <span class="font-semibold text-sm text-foreground">{cat.name}</span>
+                                </div>
+                                <span class="font-mono text-xs text-muted-foreground block">
+                                  Catalog ID: {cat.id}
+                                </span>
+                              </div>
+                              <div class="grid size-5 shrink-0 place-items-center rounded-full border {isSelected ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'}">
+                                {#if isSelected}
+                                  <Check class="size-3" />
+                                {/if}
+                              </div>
+                            </div>
+
+                            <div class="mt-3 flex flex-wrap items-center gap-1.5 border-t pt-2 text-[11px] text-muted-foreground">
+                              {#if cat.product_count !== undefined}
+                                <span class="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
+                                  {cat.product_count} {cat.product_count === 1 ? 'product' : 'products'}
+                                </span>
+                              {/if}
+                              {#if cat.vertical}
+                                <span class="rounded bg-muted/60 px-1.5 py-0.5 capitalize text-muted-foreground">
+                                  {cat.vertical}
+                                </span>
+                              {/if}
+                              {#if cat.business_name}
+                                <span class="rounded bg-primary/10 text-primary px-1.5 py-0.5 font-medium truncate max-w-[140px]" title={cat.business_name}>
+                                  {cat.business_name}
+                                </span>
+                              {/if}
+                            </div>
+                          </button>
+                        {/each}
+                      </div>
+                    {:else if !isFetchingMeta}
+                      <div class="rounded-xl border border-dashed bg-muted/20 p-5 text-center space-y-2">
+                        <Layers class="mx-auto size-7 text-muted-foreground/60" />
+                        <p class="text-xs font-semibold text-foreground">No catalogs discovered automatically</p>
+                        <p class="text-xs text-muted-foreground max-w-md mx-auto">
+                          You can enter your Meta Commerce Catalog ID manually below, or make sure your Meta system user / access token has the <code>catalog_management</code> permission in Meta Business Suite.
+                        </p>
+                      </div>
+                    {/if}
+
+                    <!-- Manual Input / Override -->
+                    <div class="space-y-1.5 pt-2">
+                      <Label for="meta_catalog_id" class="text-xs font-medium text-muted-foreground">
+                        Selected Catalog ID (or enter manual Catalog ID override)
+                      </Label>
+                      <input
+                        id="meta_catalog_id"
+                        type="text"
+                        bind:value={metaCatalogId}
+                        placeholder="e.g. 1029384756"
+                        class={selectClass}
+                      />
+                    </div>
+                  </div>
+
+                  {#if metaCatalogId}
+                    {@const selectedCatObj = fetchedMetaCatalogs.find((c) => c.id === metaCatalogId)}
+                    <div class="rounded-lg border border-success/30 bg-success/5 p-3.5 text-xs text-success-foreground space-y-1">
+                      <div class="flex items-center gap-1.5 font-semibold text-success">
+                        <CheckCircle2 class="size-4" /> Selected Catalog for Import
+                      </div>
+                      <p class="text-muted-foreground">
+                        Products will be synchronized and published to Meta Commerce Catalog:
+                        <strong class="text-foreground font-semibold">{selectedCatObj?.name || `Catalog #${metaCatalogId}`}</strong>
+                        <span class="font-mono text-[11px] ml-1">({metaCatalogId})</span>.
+                      </p>
+                    </div>
+                  {/if}
                 </CardContent>
               </Card>
 
@@ -1020,6 +1509,37 @@
                     <div class="flex justify-between pb-1">
                       <span class="text-muted-foreground">Etsy Listing State:</span>
                       <span class="font-semibold">{publishImmediately ? "Active" : "Draft"}</span>
+                    </div>
+                  {/if}
+
+                  {#if selectedChannels.includes("ebay")}
+                    <div class="flex justify-between border-b pb-2">
+                      <span class="text-muted-foreground">eBay Fulfillment Policy:</span>
+                      <span class="font-mono">{ebayFulfillmentPolicyId || "Auto/Default"}</span>
+                    </div>
+                    <div class="flex justify-between border-b pb-2">
+                      <span class="text-muted-foreground">eBay Return Policy:</span>
+                      <span class="font-mono">{ebayReturnPolicyId || "Auto/Default"}</span>
+                    </div>
+                    <div class="flex justify-between border-b pb-2">
+                      <span class="text-muted-foreground">eBay Payment Policy:</span>
+                      <span class="font-mono">{ebayPaymentPolicyId || "Auto/Default"}</span>
+                    </div>
+                    <div class="flex justify-between border-b pb-2">
+                      <span class="text-muted-foreground">eBay Location Key:</span>
+                      <span class="font-mono">{ebayMerchantLocationKey || "DEFAULT_WAREHOUSE"}</span>
+                    </div>
+                    <div class="flex justify-between pb-1">
+                      <span class="text-muted-foreground">eBay Category / Condition:</span>
+                      <span class="font-semibold">{ebayCategoryId || "Auto"} ({ebayCondition})</span>
+                    </div>
+                  {/if}
+
+                  {#if metaChannel && selectedChannels.includes(metaChannel.connector)}
+                    {@const selectedCatObj = fetchedMetaCatalogs.find((c) => c.id === metaCatalogId)}
+                    <div class="flex justify-between border-t pt-2">
+                      <span class="text-muted-foreground">Meta Commerce Catalog:</span>
+                      <span class="font-mono font-medium">{selectedCatObj?.name || "Catalog"} (#{metaCatalogId || "Default"})</span>
                     </div>
                   {/if}
                 </div>

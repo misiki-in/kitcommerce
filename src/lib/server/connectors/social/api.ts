@@ -121,12 +121,23 @@ export function makeMetaConnector(spec: MetaSpec): MarketplaceConnector {
     if (!token) {
       throw new ConnectorError(`missing ${spec.displayName} access token`, "AUTHENTICATION");
     }
-    const catalog = ctx.credentials.catalog_id;
-    if (!catalog) {
+    let catalog = ctx.config.catalog_id || ctx.credentials.catalog_id;
+    if (!catalog && path.includes("{container}")) {
+      // Attempt auto-discovery if catalog_id was not explicitly configured
+      try {
+        const discovery = await discoverAllMetaResources(ctx);
+        if (discovery.catalogId) {
+          catalog = discovery.catalogId;
+          ctx.config.catalog_id = String(catalog);
+        }
+      } catch {}
+    }
+    if (!catalog && path.includes("{container}")) {
       throw new ConnectorError(`missing ${spec.displayName} catalog_id`, "AUTHENTICATION");
     }
 
-    const res = await fetch(`${META_GRAPH}${path.replace("{container}", catalog)}`, {
+    const targetUrl = `${META_GRAPH}${path.replace("{container}", String(catalog || ""))}`;
+    const res = await fetch(targetUrl, {
       ...init,
       headers: {
         Authorization: `Bearer ${token}`,
@@ -237,8 +248,26 @@ export function makeMetaConnector(spec: MetaSpec): MarketplaceConnector {
 
     async health(ctx) {
       try {
-        await call(ctx, "/{container}");
-        return { status: "HEALTHY" };
+        let targetCatalogId = ctx.config.catalog_id || ctx.credentials.catalog_id;
+        if (!targetCatalogId) {
+          try {
+            const discovery = await discoverAllMetaResources(ctx);
+            if (discovery.catalogId) {
+              targetCatalogId = discovery.catalogId;
+              ctx.config.catalog_id = String(discovery.catalogId);
+            }
+          } catch {}
+        }
+
+        if (!targetCatalogId) {
+          throw new ConnectorError("channel config is missing catalog_id", "VALIDATION");
+        }
+
+        const catData = await call(ctx, `/${targetCatalogId}?fields=id,name,vertical,product_count`);
+        return {
+          status: "HEALTHY",
+          detail: catData?.name ? `Catalog: ${catData.name} (${catData.product_count ?? 0} products)` : undefined,
+        };
       } catch (e) {
         const err = e as ConnectorError;
         return {
@@ -261,6 +290,94 @@ export function makeMetaConnector(spec: MetaSpec): MarketplaceConnector {
         ctx,
         toItems(ctx, p, "UPDATE").map((data) => ({ method: "UPDATE", data })),
       );
+    },
+
+    async deleteProduct(
+      ctx: ConnectorContext,
+      remoteId: string,
+      options?: { skus?: string[]; product?: CanonicalProduct },
+    ): Promise<boolean> {
+      const skusToDelete = new Set<string>();
+      if (remoteId) skusToDelete.add(String(remoteId).trim());
+      if (options?.skus) {
+        for (const s of options.skus) {
+          if (s) skusToDelete.add(String(s).trim());
+        }
+      }
+      if (options?.product?.variants) {
+        for (const v of options.product.variants) {
+          if (v.sku) skusToDelete.add(String(v.sku).trim());
+        }
+      }
+      if (options?.product?.sku) {
+        skusToDelete.add(String(options.product.sku).trim());
+      }
+
+      ctx.log(`[Meta Delete] Deleting product ${remoteId} (SKUs: ${Array.from(skusToDelete).join(", ")})`);
+
+      let deleted = false;
+      const errors: string[] = [];
+
+      // 1. Try deleting via product_groups endpoint if remoteId is product group retailer_id
+      try {
+        const groupRes = await call(
+          ctx,
+          `/{container}/product_groups?retailer_id=${encodeURIComponent(remoteId)}`,
+          { method: "DELETE" },
+        );
+        if (groupRes?.success !== false) {
+          deleted = true;
+          ctx.log(`[Meta Delete] Successfully deleted product group ${remoteId}`);
+        }
+      } catch (grpErr: any) {
+        errors.push(`product_group: ${grpErr.message}`);
+      }
+
+      // 2. Delete individual variant items via items_batch
+      const deleteRequests = Array.from(skusToDelete).map((sku) => ({
+        method: "DELETE",
+        data: { id: sku },
+      }));
+
+      if (deleteRequests.length > 0) {
+        try {
+          await itemsBatch(ctx, deleteRequests);
+          deleted = true;
+          ctx.log(`[Meta Delete] Successfully deleted items batch for SKUs: ${Array.from(skusToDelete).join(", ")}`);
+        } catch (batchErr: any) {
+          if (!deleted && !batchErr.message.toLowerCase().includes("not found")) {
+            errors.push(`items_batch: ${batchErr.message}`);
+          }
+        }
+      }
+
+      // 3. Fallback: single item delete endpoint for each SKU
+      if (!deleted) {
+        for (const sku of skusToDelete) {
+          try {
+            const singleRes = await call(
+              ctx,
+              `/{container}/products?retailer_id=${encodeURIComponent(sku)}`,
+              { method: "DELETE" },
+            );
+            if (singleRes?.success) deleted = true;
+          } catch (singleErr: any) {}
+        }
+      }
+
+      if (!deleted && errors.length > 0) {
+        const fatalErrors = errors.filter(
+          (e) => !e.toLowerCase().includes("does not exist") && !e.toLowerCase().includes("not found"),
+        );
+        if (fatalErrors.length > 0) {
+          throw new ConnectorError(
+            `${spec.displayName} delete failed: ${fatalErrors.join("; ")}`,
+            "API_FAILURE",
+          );
+        }
+      }
+
+      return true;
     },
 
     async updateInventory(ctx, u: InventoryUpdate) {
@@ -297,5 +414,257 @@ export function makeMetaConnector(spec: MetaSpec): MarketplaceConnector {
         "VALIDATION",
       );
     },
+
+    discover: discoverAllMetaResources,
   };
 }
+
+/**
+ * Discovers Meta Catalogs, Businesses, and user details using the access token.
+ */
+export async function discoverAllMetaResources(ctx: ConnectorContext): Promise<{
+  catalogId?: string;
+  catalogName?: string;
+  catalogs: Array<{ id: string; name: string; vertical?: string; product_count?: number }>;
+  businesses: Array<{ id: string; name: string }>;
+  errors: string[];
+}> {
+  const token = (ctx.credentials.access_token || "").trim();
+  if (!token) {
+    throw new ConnectorError("missing Meta access token for resource discovery", "AUTHENTICATION");
+  }
+
+  const errors: string[] = [];
+  const catalogsMap = new Map<string, { id: string; name: string; vertical?: string; product_count?: number; business_id?: string; business_name?: string }>();
+  const businessesMap = new Map<string, { id: string; name: string }>();
+
+  const headers = { Authorization: `Bearer ${token}` };
+
+  // Helper function for Graph API calls
+  async function graphGet(endpoint: string): Promise<any> {
+    const res = await fetch(`${META_GRAPH}${endpoint}`, { headers });
+    if (!res.ok) {
+      const text = await res.text();
+      let msg = `${res.status} ${text.slice(0, 300)}`;
+      try {
+        const json = JSON.parse(text);
+        if (json.error?.message) msg = json.error.message;
+      } catch {}
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  // 1. Fetch assigned product catalogs (/me/assigned_product_catalogs)
+  try {
+    const data = await graphGet("/me/assigned_product_catalogs?fields=id,name,vertical,product_count,business");
+    if (Array.isArray(data?.data)) {
+      for (const item of data.data) {
+        if (item.id) {
+          if (item.business?.id) {
+            businessesMap.set(String(item.business.id), {
+              id: String(item.business.id),
+              name: item.business.name || `Business #${item.business.id}`,
+            });
+          }
+          catalogsMap.set(String(item.id), {
+            id: String(item.id),
+            name: item.name || `Catalog #${item.id}`,
+            vertical: item.vertical,
+            product_count: item.product_count,
+            business_id: item.business?.id ? String(item.business.id) : undefined,
+            business_name: item.business?.name,
+          });
+        }
+      }
+    }
+  } catch (err: any) {
+    errors.push(`assigned_product_catalogs: ${err.message}`);
+  }
+
+  // 2. Fetch businesses (/me/businesses, /me/assigned_businesses, /me/client_businesses)
+  const businessEndpoints = ["/me/businesses", "/me/assigned_businesses", "/me/client_businesses"];
+  for (const ep of businessEndpoints) {
+    try {
+      const bizData = await graphGet(`${ep}?fields=id,name`);
+      if (Array.isArray(bizData?.data)) {
+        for (const b of bizData.data) {
+          if (b.id && !businessesMap.has(String(b.id))) {
+            businessesMap.set(String(b.id), { id: String(b.id), name: b.name || `Business #${b.id}` });
+          }
+        }
+      }
+    } catch (err: any) {
+      errors.push(`${ep}: ${err.message}`);
+    }
+  }
+
+  // Fetch catalogs for all discovered businesses
+  for (const [bizId, b] of businessesMap.entries()) {
+    // 2a. Owned catalogs
+    try {
+      const owned = await graphGet(`/${bizId}/owned_product_catalogs?fields=id,name,vertical,product_count,business`);
+      if (Array.isArray(owned?.data)) {
+        for (const item of owned.data) {
+          if (item.id && !catalogsMap.has(String(item.id))) {
+            catalogsMap.set(String(item.id), {
+              id: String(item.id),
+              name: item.name || `Catalog #${item.id}`,
+              vertical: item.vertical,
+              product_count: item.product_count,
+              business_id: bizId,
+              business_name: b.name,
+            });
+          }
+        }
+      }
+    } catch (bErr: any) {
+      errors.push(`business (${bizId}) owned_catalogs: ${bErr.message}`);
+    }
+
+    // 2b. Client catalogs
+    try {
+      const client = await graphGet(`/${bizId}/client_product_catalogs?fields=id,name,vertical,product_count,business`);
+      if (Array.isArray(client?.data)) {
+        for (const item of client.data) {
+          if (item.id && !catalogsMap.has(String(item.id))) {
+            catalogsMap.set(String(item.id), {
+              id: String(item.id),
+              name: item.name || `Catalog #${item.id}`,
+              vertical: item.vertical,
+              product_count: item.product_count,
+              business_id: bizId,
+              business_name: b.name,
+            });
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 3. If a specific catalog_id is configured or entered, query it directly
+  const explicitCatalogId = ctx.config?.catalog_id || ctx.credentials.catalog_id;
+  if (explicitCatalogId && !catalogsMap.has(String(explicitCatalogId))) {
+    try {
+      const cat = await graphGet(`/${explicitCatalogId}?fields=id,name,vertical,product_count,business`);
+      if (cat?.id) {
+        if (cat.business?.id && !businessesMap.has(String(cat.business.id))) {
+          businessesMap.set(String(cat.business.id), {
+            id: String(cat.business.id),
+            name: cat.business.name || `Business #${cat.business.id}`,
+          });
+        }
+        catalogsMap.set(String(cat.id), {
+          id: String(cat.id),
+          name: cat.name || `Catalog #${cat.id}`,
+          vertical: cat.vertical,
+          product_count: cat.product_count,
+          business_id: cat.business?.id ? String(cat.business.id) : undefined,
+          business_name: cat.business?.name,
+        });
+      }
+    } catch (err: any) {
+      errors.push(`catalog (${explicitCatalogId}): ${err.message}`);
+    }
+  }
+
+  const catalogs = Array.from(catalogsMap.values());
+  const businessesList = Array.from(businessesMap.values());
+  let targetCatalogId = explicitCatalogId ? String(explicitCatalogId) : catalogs[0]?.id;
+  let targetCatalogName = catalogs.find((c) => c.id === targetCatalogId)?.name || catalogs[0]?.name;
+
+  return {
+    catalogId: targetCatalogId,
+    catalogName: targetCatalogName,
+    catalogs,
+    businesses: businessesList,
+    errors,
+  };
+}
+
+/**
+ * Exchanges authorization code for long-lived Meta access token and discovers catalogs.
+ */
+export async function exchangeMetaToken(input: {
+  appId: string;
+  appSecret?: string;
+  code: string;
+  redirectUri: string;
+}): Promise<{
+  accessToken: string;
+  tokenType: string;
+  expiresIn: number;
+  catalogId?: string;
+  catalogName?: string;
+  catalogs: Array<{ id: string; name: string; vertical?: string; product_count?: number }>;
+  businesses: Array<{ id: string; name: string }>;
+}> {
+  const { appId, appSecret, code, redirectUri } = input;
+
+  // Step 1: Exchange code for short-lived access token
+  const tokenParams = new URLSearchParams({
+    client_id: appId,
+    redirect_uri: redirectUri,
+    code,
+  });
+  if (appSecret) tokenParams.set("client_secret", appSecret);
+
+  const res = await fetch(`${META_GRAPH}/oauth/access_token?${tokenParams.toString()}`);
+  const body = await res.json();
+  if (!res.ok || !body.access_token) {
+    throw new Error(body.error?.message || `Meta OAuth token exchange failed (HTTP ${res.status}).`);
+  }
+
+  let finalToken = String(body.access_token);
+  let expiresIn = Number(body.expires_in || 5184000);
+
+  // Step 2: If appSecret is available, upgrade to a long-lived user access token (60 days)
+  if (appSecret) {
+    try {
+      const longParams = new URLSearchParams({
+        grant_type: "fb_exchange_token",
+        client_id: appId,
+        client_secret: appSecret,
+        fb_exchange_token: finalToken,
+      });
+      const longRes = await fetch(`${META_GRAPH}/oauth/access_token?${longParams.toString()}`);
+      if (longRes.ok) {
+        const longBody = await longRes.json();
+        if (longBody.access_token) {
+          finalToken = String(longBody.access_token);
+          if (longBody.expires_in) expiresIn = Number(longBody.expires_in);
+        }
+      }
+    } catch {}
+  }
+
+  // Step 3: Discover catalogs with this token
+  let catalogs: any[] = [];
+  let businesses: any[] = [];
+  let catalogId: string | undefined;
+  let catalogName: string | undefined;
+
+  try {
+    const discovery = await discoverAllMetaResources({
+      credentials: { access_token: finalToken },
+      config: {},
+      seller: {} as any,
+      log: () => {},
+    });
+    catalogs = discovery.catalogs;
+    businesses = discovery.businesses;
+    catalogId = discovery.catalogId;
+    catalogName = discovery.catalogName;
+  } catch {}
+
+  return {
+    accessToken: finalToken,
+    tokenType: body.token_type || "bearer",
+    expiresIn,
+    catalogId,
+    catalogName,
+    catalogs,
+    businesses,
+  };
+}
+

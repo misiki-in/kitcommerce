@@ -1,47 +1,61 @@
 # Meta (Facebook & Instagram) — going live
 
-> Connectors `facebook` and `instagram` · System-user access token (`catalog_management` + `business_management`) · Last verified against official docs: 2026-08-27
+> Connector `meta` (and legacy `facebook`, `instagram`) · Easy Connect OAuth (App ID & Secret) or System-user access token (`catalog_management` + `business_management`) · Last verified against official docs: 2026-08-27
 
-Both connectors write the same Meta Product Catalog over the Graph API, so this is one setup done once: the same `catalog_id` and `access_token` go into both connect forms. Everything is free and self-serve — Business Manager, Commerce Manager, the developer app and the Catalog API have no fees and no partner program — and the clicking takes an hour or two. The one wait you cannot skip is Meta's shop review (typically a few days, sometimes with business verification). One reality to plan around: Meta removed native checkout globally between June and August 2025, so every purchase now completes on **your own website** — each product's `landing_url` — and no orders ever exist on Meta. Both connectors declare `orderImport: false`; this integration is catalogue sync, and only catalogue sync.
+Facebook Shop and Instagram Shopping share the exact same Meta Product Catalog over the Graph API. The unified `meta` connector synchronizes your canonical products, prices, variants, and stock levels to that shared catalogue in a single place.
 
-## Before you start
+You can connect in two ways:
+1. **1-Click Easy Connect**: Enter your Meta App ID & App Secret from Meta for Developers to automatically grant permissions, exchange tokens, and auto-discover your catalogues.
+2. **System User Token (Manual)**: Provide a System User Access Token and Catalog ID from Business Settings and Commerce Manager.
 
-- A personal Facebook profile that can create (or already administers) a **Facebook Page** for the shop — create one at https://www.facebook.com/pages/create if none exists.
-- Your **own e-commerce site**: checkout happens there, and every product needs a working landing page URL (the connector's required `attributes.landing_url`).
-- For Instagram: an Instagram account you are willing to switch to a **Professional (Business)** account.
-- Legal business details on hand in case Meta asks for business verification during shop review.
+## Quick Connection Options
+
+### Option A: Easy Connect (Recommended)
+1. In [Meta for Developers](https://developers.facebook.com/apps), create or open your Business App.
+2. Copy your **App ID** and **App Secret** (from App Settings → Basic).
+3. Under **Facebook Login → Settings**, add your callback URI (e.g. `http://localhost:5173/auth/meta/callback`).
+4. In OpenCommerce, click **Connect Meta**, enter your App ID & App Secret, and click **Connect with Meta**.
+5. Approve the consent dialog — your access token is generated, 60-day refreshable tokens are stored, and catalogues are auto-discovered!
+
+### Option B: Manual Setup with System User Token
+
+Follow steps 1–7 below to manually mint a permanent system-user token.
 
 ## Steps
 
 ### 1. Create a Meta Business Portfolio
-
-Log in at https://business.facebook.com/overview and create a business portfolio (a Business Manager account): business name, your name, work email. You receive the portfolio that will own the catalogue, the app and the system user.
+Log in at https://business.facebook.com/overview and create a business portfolio (a Business Manager account).
 
 ### 2. Create a catalogue in Commerce Manager
-
-Open https://business.facebook.com/commerce/, confirm the correct business portfolio is selected in the left menu, click **Add products / Create catalogue**, choose type **E-commerce**, pick the portfolio as owner and name the catalogue. You can leave it empty — the API sync will fill it. You receive: a catalogue.
+Open https://business.facebook.com/commerce/, click **Add products / Create catalogue**, choose type **E-commerce**, pick the portfolio as owner and name the catalogue.
 
 ### 3. Find the Catalog ID
-
-In Commerce Manager select the catalogue and open its **Settings** tab — the Catalog ID is shown there, and it also appears in the browser URL (`business.facebook.com/commerce/catalogs/{catalog_id}/...`). You receive: `catalog_id`.
+In Commerce Manager select the catalogue and open its **Settings** tab — the Catalog ID is shown there (`catalog_id`).
 
 ### 4. Create a Meta app
-
-At https://developers.facebook.com/apps click **Create App**, choose the **Business** use case / app type, and connect it to the portfolio from step 1. No App Review is needed — Standard Access to `catalog_management` is enough to manage a catalogue owned by the same business as the app. You receive: an app the token will be minted against.
+At https://developers.facebook.com/apps click **Create App**, choose the **Business** use case / app type, and connect it to your business portfolio.
 
 ### 5. Create a system user
-
-In Business Settings (https://business.facebook.com/settings) go to **Users → System users → Add**. Role **Admin** is simplest (Admin system users can reach all business assets); if you choose **Employee**, you must explicitly grant assets under **Assign assets** — give the app *Manage app* and the catalogue *Manage catalogue*. You receive: a system user.
+In Business Settings (https://business.facebook.com/settings) go to **Users → System users → Add** with role **Admin**.
 
 ### 6. Generate the permanent access token
-
-On the system user's row click **Generate new token**: select the app from step 4, set token expiration to **Never**, and tick the scopes **`catalog_management`** and **`business_management`** (`catalog_management` lists `business_management` as a dependency). The token is shown **once** — copy it immediately. You receive: `access_token`.
+On the system user's row click **Generate new token**: select the app from step 4, set token expiration to **Never**, and tick the scopes **`catalog_management`** and **`business_management`**. Copy the token (`access_token`).
 
 ### 7. Find the Business ID
+Business Settings → **Business info** shows the portfolio's ID (`business_id`).
 
-Business Settings → **Business info** shows the portfolio's ID; it is also the `business_id` parameter in the Business Settings URL. You receive: `business_id`. (The connect form marks it optional — catalogue calls never send it — but it is worth recording as the identity the token belongs to.)
+### 8. Connect Facebook & Instagram Shops
+In Commerce Manager, connect your Facebook Page and Instagram Professional Account to the shared catalogue.
 
-### 8. Create the Facebook Shop and connect the catalogue
+## What goes where
+
+| Connect-form field | Where the value comes from |
+| --- | --- |
+| `app_id` (optional) | Meta for Developers → App settings → Basic (App ID) |
+| `app_secret` (optional) | Meta for Developers → App settings → Basic (App Secret) |
+| `catalog_id` (optional) | Commerce Manager → catalogue → **Settings** tab, or auto-discovered |
+| `access_token` | Business Settings → System users → Generate new token, or generated via 1-Click Connect |
+| `business_id` (optional) | Business Settings → **Business info**; auto-discovered |
 
 In Commerce Manager create a **Shop**, select the Facebook Page as the sales channel, pick the catalogue, and choose checkout on **your website** (the only option since native checkout was phased out mid-2025). Submit the shop for review. Approval typically takes a few days, and Meta may require business verification (Business Settings → **Security Centre**, legal documents).
 

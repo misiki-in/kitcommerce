@@ -93,6 +93,69 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
     } catch {}
   }
 
+  // Auto-detect Meta Catalog ID if connector is Meta
+  if ((provider.connector === "meta" || provider.connector === "facebook" || provider.connector === "instagram") && !initialConfig.catalog_id) {
+    try {
+      const { discoverAllMetaResources } = await import("$server/connectors/social");
+      const creds = result!.credentials;
+      const ctx: any = {
+        config: initialConfig,
+        credentials: creds,
+        seller: { storeName: store.name, currency: store.currency },
+        log: () => {},
+      };
+      const disc = await discoverAllMetaResources(ctx);
+      if (disc.catalogId) {
+        initialConfig = {
+          ...initialConfig,
+          catalog_id: disc.catalogId,
+          catalog_name: disc.catalogName,
+          discovered_catalogs: disc.catalogs,
+          discovered_businesses: disc.businesses,
+        };
+      }
+    } catch {}
+  }
+
+  // Auto-detect eBay Business Policies and Location if connector is eBay
+  if (provider.connector === "ebay") {
+    try {
+      const { discoverAllEbayResources } = await import("$server/connectors/ebay");
+      const creds = result!.credentials;
+      const ctx: any = {
+        config: initialConfig,
+        credentials: creds,
+        seller: {
+          storeName: store.name,
+          currency: store.currency,
+          address: {
+            line1: store.address_line1,
+            line2: store.address_line2,
+            city: store.city,
+            state: store.state,
+            postalCode: store.postal_code,
+            country: store.country,
+          },
+        },
+        log: () => {},
+      };
+      const disc = await discoverAllEbayResources(ctx);
+      if (disc.defaultFulfillmentPolicyId) {
+        initialConfig = {
+          ...initialConfig,
+          ebay_fulfillment_policy_id: disc.defaultFulfillmentPolicyId,
+          ebay_return_policy_id: disc.defaultReturnPolicyId,
+          ebay_payment_policy_id: disc.defaultPaymentPolicyId,
+          ebay_merchant_location_key: disc.defaultMerchantLocationKey,
+          discovered_fulfillment_policies: disc.fulfillmentPolicies,
+          discovered_return_policies: disc.returnPolicies,
+          discovered_payment_policies: disc.paymentPolicies,
+          discovered_locations: disc.locations,
+        };
+      }
+    } catch {}
+  }
+
   const channel =
     existing ??
     repo.createChannel({

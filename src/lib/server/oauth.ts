@@ -157,52 +157,54 @@ const ebay: OAuthProvider = {
   label: "eBay",
   pkce: false,
 
-  enabled: () =>
-    Boolean(config.oauth.ebay.clientId && config.oauth.ebay.clientSecret && config.oauth.ebay.ruName),
+  enabled: () => true,
 
-  authorizeUrl({ state }) {
-    const host = config.oauth.ebay.sandbox ? "auth.sandbox.ebay.com" : "auth.ebay.com";
+  authorizeUrl({ state, clientId, redirectUri }) {
+    const isSandbox = config.oauth.ebay.sandbox;
+    const host = isSandbox ? "auth.sandbox.ebay.com" : "auth.ebay.com";
+    const appId = clientId || config.oauth.ebay.clientId;
+    const ruName =
+      (redirectUri && !redirectUri.startsWith("http") ? redirectUri : null) ||
+      config.oauth.ebay.ruName;
+
     const q = new URLSearchParams({
-      client_id: config.oauth.ebay.clientId,
+      client_id: appId,
       response_type: "code",
-      // Not the callback URL. eBay matches this against the RuName registered
-      // for the application, and resolves the real redirect from that.
-      redirect_uri: config.oauth.ebay.ruName,
+      redirect_uri: ruName || redirectUri,
       scope: config.oauth.ebay.scopes,
       state,
     });
-    return `https://${host}/oauth2/authorize?${q}`;
+    return `https://${host}/oauth2/authorize?${q.toString()}`;
   },
 
-  async exchange({ code }) {
-    const api = config.oauth.ebay.sandbox ? "api.sandbox.ebay.com" : "api.ebay.com";
-    const basic = Buffer.from(
-      `${config.oauth.ebay.clientId}:${config.oauth.ebay.clientSecret}`,
-    ).toString("base64");
+  async exchange({ code, clientId, sharedSecret, redirectUri }) {
+    const isSandbox = config.oauth.ebay.sandbox;
+    const api = isSandbox ? "api.sandbox.ebay.com" : "api.ebay.com";
+    const appId = clientId || config.oauth.ebay.clientId;
+    const certId = sharedSecret || config.oauth.ebay.clientSecret;
+    const ruName =
+      (redirectUri && !redirectUri.startsWith("http") ? redirectUri : null) ||
+      config.oauth.ebay.ruName;
+
+    const basic = Buffer.from(`${appId}:${certId}`).toString("base64");
 
     const body = await form(
       `https://${api}/identity/v1/oauth2/token`,
       new URLSearchParams({
         grant_type: "authorization_code",
         code,
-        redirect_uri: config.oauth.ebay.ruName,
+        redirect_uri: ruName || redirectUri,
       }),
       { Authorization: `Basic ${basic}` },
     );
 
-    /*
-     * Only the refresh token is stored. eBay access tokens last two hours and
-     * the connector already mints one per run from the refresh token, which is
-     * good for eighteen months — persisting the short-lived half would just be
-     * a stale secret sitting in the database.
-     */
     return {
       credentials: {
-        client_id: config.oauth.ebay.clientId,
-        client_secret: config.oauth.ebay.clientSecret,
+        client_id: appId,
+        client_secret: certId,
         refresh_token: String(body.refresh_token),
       },
-      channelConfig: config.oauth.ebay.sandbox ? { sandbox: true } : undefined,
+      channelConfig: isSandbox ? { sandbox: true } : undefined,
     };
   },
 };
@@ -262,7 +264,60 @@ const amazon: OAuthProvider = {
   },
 };
 
-const PROVIDERS: Record<string, OAuthProvider> = { etsy, ebay, amazon };
+const meta: OAuthProvider = {
+  connector: "meta",
+  label: "Meta (Facebook & Instagram)",
+  pkce: false,
+
+  enabled: () => true,
+
+  authorizeUrl({ redirectUri, state, clientId }) {
+    const appId = clientId || config.oauth.meta.appId;
+    const scopes = config.oauth.meta.scopes || "catalog_management,business_management";
+    const q = new URLSearchParams({
+      client_id: appId,
+      redirect_uri: redirectUri,
+      scope: scopes,
+      response_type: "code",
+      state,
+    });
+    return `https://www.facebook.com/v26.0/dialog/oauth?${q.toString()}`;
+  },
+
+  async exchange({ code, redirectUri, clientId, sharedSecret }) {
+    const appId = clientId || config.oauth.meta.appId;
+    const appSecret = sharedSecret || config.oauth.meta.appSecret;
+
+    const { exchangeMetaToken } = await import("./connectors/social");
+    const result = await exchangeMetaToken({
+      appId,
+      appSecret,
+      code,
+      redirectUri,
+    });
+
+    const credentials: Record<string, string> = {
+      access_token: result.accessToken,
+    };
+    if (appId) credentials.app_id = appId;
+    if (appSecret) credentials.app_secret = appSecret;
+    if (result.catalogId) credentials.catalog_id = result.catalogId;
+    if (result.businesses?.[0]?.id) credentials.business_id = result.businesses[0].id;
+
+    const channelConfig: Record<string, unknown> = {};
+    if (result.catalogId) channelConfig.catalog_id = result.catalogId;
+    if (result.catalogName) channelConfig.catalog_name = result.catalogName;
+    if (result.catalogs?.length) channelConfig.discovered_catalogs = result.catalogs;
+    if (result.businesses?.length) channelConfig.discovered_businesses = result.businesses;
+
+    return {
+      credentials,
+      channelConfig: Object.keys(channelConfig).length > 0 ? channelConfig : undefined,
+    };
+  },
+};
+
+const PROVIDERS: Record<string, OAuthProvider> = { etsy, meta, facebook: meta, instagram: meta, ebay, amazon };
 
 export function oauthProvider(name: string): OAuthProvider | undefined {
   return PROVIDERS[name];

@@ -80,3 +80,166 @@ export async function call(ctx: ConnectorContext, path: string, init: RequestIni
 }
 
 export const cm = (mm: number): number => Math.round(mm) / 10;
+
+export interface EbayDiscoveryResult {
+  fulfillmentPolicies: Array<{ id: string; name: string; description?: string }>;
+  returnPolicies: Array<{ id: string; name: string; description?: string; returnsAccepted?: boolean }>;
+  paymentPolicies: Array<{ id: string; name: string; description?: string }>;
+  locations: Array<{ key: string; name: string; status?: string }>;
+  defaultFulfillmentPolicyId?: string;
+  defaultReturnPolicyId?: string;
+  defaultPaymentPolicyId?: string;
+  defaultMerchantLocationKey?: string;
+  errors: string[];
+}
+
+/**
+ * Discovers seller business policies and inventory locations from eBay API.
+ */
+export async function discoverAllEbayResources(ctx: ConnectorContext): Promise<EbayDiscoveryResult> {
+  const errors: string[] = [];
+  const mId = marketplaceId(ctx);
+
+  let fulfillmentPolicies: Array<{ id: string; name: string; description?: string }> = [];
+  let returnPolicies: Array<{ id: string; name: string; description?: string; returnsAccepted?: boolean }> = [];
+  let paymentPolicies: Array<{ id: string; name: string; description?: string }> = [];
+  let locations: Array<{ key: string; name: string; status?: string }> = [];
+
+  // 1. Fetch fulfillment policies
+  try {
+    const res = await call(ctx, `/sell/account/v1/fulfillment_policy?marketplace_id=${mId}`);
+    const list = res?.fulfillmentPolicies ?? [];
+    fulfillmentPolicies = list.map((p: any) => ({
+      id: String(p.fulfillmentPolicyId),
+      name: p.name || `Fulfillment Policy #${p.fulfillmentPolicyId}`,
+      description: p.description,
+    }));
+  } catch (err: any) {
+    errors.push(`Fulfillment policies discovery failed: ${err.message}`);
+  }
+
+  // 2. Fetch return policies
+  try {
+    const res = await call(ctx, `/sell/account/v1/return_policy?marketplace_id=${mId}`);
+    const list = res?.returnPolicies ?? [];
+    returnPolicies = list.map((p: any) => ({
+      id: String(p.returnPolicyId),
+      name: p.name || `Return Policy #${p.returnPolicyId}`,
+      description: p.description,
+      returnsAccepted: Boolean(p.returnsAccepted),
+    }));
+  } catch (err: any) {
+    errors.push(`Return policies discovery failed: ${err.message}`);
+  }
+
+  // 3. Fetch payment policies
+  try {
+    const res = await call(ctx, `/sell/account/v1/payment_policy?marketplace_id=${mId}`);
+    const list = res?.paymentPolicies ?? [];
+    paymentPolicies = list.map((p: any) => ({
+      id: String(p.paymentPolicyId),
+      name: p.name || `Payment Policy #${p.paymentPolicyId}`,
+      description: p.description,
+    }));
+  } catch (err: any) {
+    errors.push(`Payment policies discovery failed: ${err.message}`);
+  }
+
+  // 4. Fetch inventory locations
+  try {
+    const res = await call(ctx, `/sell/inventory/v1/location?limit=100`);
+    const list = res?.locations ?? [];
+    locations = list.map((loc: any) => ({
+      key: String(loc.merchantLocationKey),
+      name: loc.name || String(loc.merchantLocationKey),
+      status: loc.merchantLocationStatus,
+    }));
+
+    // If no merchant location exists yet, auto-create a default location
+    if (locations.length === 0) {
+      const defaultKey = "DEFAULT_WAREHOUSE";
+      try {
+        await call(ctx, `/sell/inventory/v1/location/${defaultKey}`, {
+          method: "POST",
+          body: JSON.stringify({
+            location: {
+              address: {
+                addressLine1: ctx.seller?.address?.line1 || "123 Commerce Way",
+                addressLine2: ctx.seller?.address?.line2 || undefined,
+                city: ctx.seller?.address?.city || "San Jose",
+                stateOrProvince: ctx.seller?.address?.state || "CA",
+                postalCode: ctx.seller?.address?.postalCode || "95125",
+                country: ctx.seller?.address?.country || "US",
+              },
+            },
+            locationTypes: ["WAREHOUSE"],
+            merchantLocationStatus: "ENABLED",
+            name: ctx.seller?.storeName ? `${ctx.seller.storeName} Warehouse` : "Main Warehouse",
+          }),
+        });
+        locations.push({ key: defaultKey, name: "Main Warehouse", status: "ENABLED" });
+      } catch (locErr: any) {
+        errors.push(`Default location registration failed: ${locErr.message}`);
+      }
+    }
+  } catch (err: any) {
+    errors.push(`Inventory locations discovery failed: ${err.message}`);
+  }
+
+  return {
+    fulfillmentPolicies,
+    returnPolicies,
+    paymentPolicies,
+    locations,
+    defaultFulfillmentPolicyId: fulfillmentPolicies[0]?.id || ctx.config.ebay_fulfillment_policy_id,
+    defaultReturnPolicyId: returnPolicies[0]?.id || ctx.config.ebay_return_policy_id,
+    defaultPaymentPolicyId: paymentPolicies[0]?.id || ctx.config.ebay_payment_policy_id,
+    defaultMerchantLocationKey: locations[0]?.key || ctx.config.ebay_merchant_location_key || "DEFAULT_WAREHOUSE",
+    errors,
+  };
+}
+
+/**
+ * Ensures an active merchant location key is available on eBay.
+ * Creates DEFAULT_WAREHOUSE if no location is present.
+ */
+export async function ensureEbayLocation(ctx: ConnectorContext, preferredKey?: string): Promise<string> {
+  const key = preferredKey || ctx.config.ebay_merchant_location_key || "DEFAULT_WAREHOUSE";
+
+  // Check if location exists
+  try {
+    const existing = await call(ctx, `/sell/inventory/v1/location/${encodeURIComponent(key)}`);
+    if (existing && existing.merchantLocationStatus === "ENABLED") {
+      return key;
+    }
+  } catch {
+    // Location does not exist, create it
+  }
+
+  // Create/register location
+  try {
+    await call(ctx, `/sell/inventory/v1/location/${encodeURIComponent(key)}`, {
+      method: "POST",
+      body: JSON.stringify({
+        location: {
+          address: {
+            addressLine1: ctx.seller?.address?.line1 || "123 Commerce Way",
+            addressLine2: ctx.seller?.address?.line2 || undefined,
+            city: ctx.seller?.address?.city || "San Jose",
+            stateOrProvince: ctx.seller?.address?.state || "CA",
+            postalCode: ctx.seller?.address?.postalCode || "95125",
+            country: ctx.seller?.address?.country || "US",
+          },
+        },
+        locationTypes: ["WAREHOUSE"],
+        merchantLocationStatus: "ENABLED",
+        name: ctx.seller?.storeName ? `${ctx.seller.storeName} Warehouse` : "Main Warehouse",
+      }),
+    });
+  } catch (err: any) {
+    console.warn(`[eBay ensureEbayLocation] Note: ${err.message}`);
+  }
+
+  return key;
+}
+

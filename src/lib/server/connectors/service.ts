@@ -226,7 +226,15 @@ export async function deleteProductFromChannel(
 
   try {
     if (typeof connector.deleteProduct === "function") {
-      await connector.deleteProduct(ctx, mapping.remote_product_id);
+      const canonical = repo.canonical(productId);
+      const skus = canonical ? canonical.variants.map((v) => v.sku).filter(Boolean) : [];
+      if (canonical?.sku && !skus.includes(canonical.sku)) {
+        skus.push(canonical.sku);
+      }
+      if (mapping.remote_product_id && !skus.includes(mapping.remote_product_id)) {
+        skus.push(mapping.remote_product_id);
+      }
+      await (connector.deleteProduct as any)(ctx, mapping.remote_product_id, { skus, product: canonical });
     }
     repo.deleteMapping(productId, channelId);
     return { success: true };

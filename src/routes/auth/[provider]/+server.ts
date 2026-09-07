@@ -11,13 +11,13 @@ import { callbackUrl, newState, oauthProvider, pkcePair } from "$server/oauth";
 export const GET: RequestHandler = ({ params, url, cookies }) => {
   const provider = oauthProvider(params.provider);
   if (!provider) error(404, "unknown marketplace");
-  if (!provider.enabled()) {
-    error(503, `${provider.label} OAuth is not configured on this installation`);
-  }
-
   const clientId = (url.searchParams.get("client_id") || url.searchParams.get("keystring") || "").trim();
   const sharedSecret = (url.searchParams.get("shared_secret") || "").trim();
   const customRedirect = url.searchParams.get("redirect_uri")?.trim();
+
+  if (!provider.enabled() && !clientId) {
+    error(503, `${provider.label} OAuth is not configured on this installation. Set environment variables or supply an App ID.`);
+  }
 
   const state = newState();
   const redirectUri = customRedirect || `${url.origin}/auth/${provider.connector}/callback`;

@@ -70,17 +70,34 @@ export function parseCSV(csvText: string): ParsedSheetRow[] {
 
   if (rows.length < 2) return [];
 
-  const headers = rows[0]!.map((h) => h.trim());
+  const rawHeaders = rows[0]!.map((h) => h.trim());
   const parsedRows: ParsedSheetRow[] = [];
 
   for (let r = 1; r < rows.length; r++) {
     const rowValues = rows[r]!;
     const obj: ParsedSheetRow = {};
-    for (let c = 0; c < headers.length; c++) {
-      const h = headers[c]!;
-      obj[h] = (rowValues[c] ?? "").trim();
+    for (let c = 0; c < rawHeaders.length; c++) {
+      const h = rawHeaders[c]!;
+      const val = (rowValues[c] ?? "").trim();
+      obj[h] = val;
+      // Also register lowercased and stripped key for robust lookups
+      const normalizedKey = h.toLowerCase().replace(/[\s_\-()]+/g, "");
+      if (!obj[normalizedKey]) {
+        obj[normalizedKey] = val;
+      }
     }
-    if (obj["SKU"] || obj["Title"] || obj["Grouped SKU"]) {
+    // Check if row has any identifier (SKU, Title, Handle, Name, etc.)
+    const hasIdentifier =
+      obj["SKU"] ||
+      obj["Title"] ||
+      obj["Grouped SKU"] ||
+      obj["sku"] ||
+      obj["title"] ||
+      obj["name"] ||
+      obj["handle"] ||
+      Object.values(obj).some((v) => v.length > 0);
+
+    if (hasIdentifier) {
       parsedRows.push(obj);
     }
   }
@@ -91,7 +108,7 @@ export function parseCSV(csvText: string): ParsedSheetRow[] {
 function clean(val: unknown): string | null {
   if (val === undefined || val === null) return null;
   const s = String(val).trim();
-  if (s === "" || s === "-" || s.toLowerCase() === "nan" || s.toLowerCase() === "null") return null;
+  if (s === "" || s === "-" || s.toLowerCase() === "nan" || s.toLowerCase() === "null" || s.toLowerCase() === "undefined") return null;
   return s;
 }
 
@@ -210,9 +227,9 @@ export function groupSheetRows(rows: ParsedSheetRow[], storeCurrency = "USD"): S
   const groupsMap = new Map<string, ParsedSheetRow[]>();
 
   for (const r of activeRows) {
-    const groupedSku = clean(r["Grouped SKU"]);
-    const parentSku = clean(r["Parent SKU"]);
-    const sku = clean(r["SKU"]) || "UNNAMED";
+    const groupedSku = clean(r["Grouped SKU"] || r["groupedsku"] || r["Group SKU"]);
+    const parentSku = clean(r["Parent SKU"] || r["parentsku"] || r["Parent"]);
+    const sku = clean(r["SKU"] || r["sku"] || r["Item Code"] || r["itemcode"] || r["Handle"] || r["handle"]) || "UNNAMED";
     const groupKey = groupedSku || parentSku || sku;
 
     if (!groupsMap.has(groupKey)) {
@@ -226,16 +243,16 @@ export function groupSheetRows(rows: ParsedSheetRow[], storeCurrency = "USD"): S
   for (const [groupKey, groupRows] of groupsMap.entries()) {
     const primary = groupRows[0]!;
     const attributePairs = collectAttributePairs(primary);
-    const title = clean(primary["Title"]) || groupKey;
+    const title = clean(primary["Title"] || primary["title"] || primary["Name"] || primary["name"]) || groupKey;
     const description = buildDescription(primary, attributePairs);
-    const categoriesStr = clean(primary["Categories"]) || "";
+    const categoriesStr = clean(primary["Categories"] || primary["categories"] || primary["Category"] || primary["category"]) || "";
     const tags = buildTags(primary);
     const materials = buildMaterials(attributePairs);
 
-    const weightG = toFloat(primary["Variant Grams"] || primary["Weight (g)"] || primary["Weight"], 0);
-    const lengthCm = toFloat(primary["Length (cm)"] || primary["Length"]);
-    const widthCm = toFloat(primary["Width (cm)"] || primary["Width"]);
-    const heightCm = toFloat(primary["Height (cm)"] || primary["Height"]);
+    const weightG = toFloat(primary["Variant Grams"] || primary["Weight (g)"] || primary["Weight"] || primary["weight"], 0);
+    const lengthCm = toFloat(primary["Length (cm)"] || primary["Length"] || primary["length"]);
+    const widthCm = toFloat(primary["Width (cm)"] || primary["Width"] || primary["width"]);
+    const heightCm = toFloat(primary["Height (cm)"] || primary["Height"] || primary["height"]);
 
     // Collect deduplicated images
     const imageUrls: string[] = [];

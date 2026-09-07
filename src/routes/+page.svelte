@@ -83,7 +83,7 @@
 
   const GROUP_NOTE: Record<string, string> = {
     Social:
-      "Instagram and Facebook publish to the same Meta catalogue, so connecting both writes one product feed twice. Neither returns orders outside Meta's native checkout. TikTok Shop does not operate in India.",
+      "Meta publishes a single catalogue to both Facebook Shop and Instagram Shopping surfaces. Neither returns orders outside Meta's native checkout. TikTok Shop does not operate in India.",
   };
 
   const ICONS: Record<string, string[]> = {

@@ -133,6 +133,11 @@ export const config = {
       // permission to.
       scopes: process.env.ETSY_SCOPES ?? "listings_r listings_w transactions_r",
     },
+    meta: {
+      appId: process.env.META_APP_ID ?? process.env.FACEBOOK_APP_ID ?? "",
+      appSecret: process.env.META_APP_SECRET ?? process.env.FACEBOOK_APP_SECRET ?? "",
+      scopes: process.env.META_SCOPES ?? "catalog_management,business_management",
+    },
     amazon: {
       /** amzn1.sellerapps.app.… from Developer Central, not the LWA client ID. */
       applicationId: process.env.AMAZON_APPLICATION_ID ?? "",
@@ -154,10 +159,13 @@ export const config = {
       clientSecret: process.env.EBAY_CLIENT_SECRET ?? "",
       /** eBay's RuName, not a URL. See $server/oauth for why. */
       ruName: process.env.EBAY_RU_NAME ?? "",
-      sandbox: process.env.EBAY_SANDBOX === "1",
+      sandbox:
+        process.env.EBAY_ENVIRONMENT === "sandbox" ||
+        process.env.EBAY_SANDBOX === "1" ||
+        process.env.EBAY_SANDBOX === "true",
       scopes:
         process.env.EBAY_SCOPES ??
-        "https://api.ebay.com/oauth/api_scope/sell.inventory https://api.ebay.com/oauth/api_scope/sell.fulfillment",
+        "https://api.ebay.com/oauth/api_scope/sell.inventory https://api.ebay.com/oauth/api_scope/sell.fulfillment https://api.ebay.com/oauth/api_scope/sell.account",
     },
   },
 

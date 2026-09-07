@@ -35,6 +35,7 @@ const DOMAINS: Record<string, string> = {
   zepto: "zeptonow.com",
   instamart: "swiggy.com",
   blinkit: "blinkit.com",
+  meta: "about.meta.com",
   instagram: "instagram.com",
   facebook: "facebook.com",
   tiktok: "tiktok.com",

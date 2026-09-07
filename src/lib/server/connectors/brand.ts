@@ -59,8 +59,13 @@ export const BRANDS: Record<string, Brand> = {
     art: `<g><circle cx="9" cy="24" r="2" fill="#E53238"/><circle cx="15" cy="24" r="2" fill="#0064D2"/><circle cx="21" cy="24" r="2" fill="#F5AF02"/><circle cx="27" cy="24" r="2" fill="#86B817"/></g>`,
   },
   etsy: { bg: "#F1641E", fg: "#FFFFFF", glyph: "E" },
-  // Social. Instagram's mark is a gradient in real life; a single mid-magenta
-  // is the honest flat approximation rather than a bad gradient at 26px.
+  // Social.
+  meta: {
+    bg: "#0064E0",
+    fg: "#FFFFFF",
+    glyph: "M",
+    art: `<path d="M10 20.5c-2.2 0-3.8-1.6-3.8-3.5s1.6-3.5 3.8-3.5c2 0 3.5 2 4.2 3 .3.5 1.3.5 1.6 0 .7-1 2.2-3 4.2-3 2.2 0 3.8 1.6 3.8 3.5s-1.6 3.5-3.8 3.5c-2 0-3.5-2-4.2-3-.3-.5-1.3-.5-1.6 0-.7 1-2.2 3-4.2 3z" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
+  },
   instagram: { bg: "#C13584", fg: "#FFFFFF", glyph: "ig" },
   facebook: { bg: "#1877F2", fg: "#FFFFFF", glyph: "f" },
   tiktok: { bg: "#010101", fg: "#25F4EE", glyph: "t" },
@@ -82,11 +87,6 @@ try {
       const dot = file.lastIndexOf(".");
       if (dot <= 0) continue;
       const name = file.slice(0, dot).toLowerCase();
-      // Must stay in step with two other places: the formats `bun logos`
-      // writes, and the TYPES map in routes/logos/[name]. It previously
-      // omitted ico and avif while the fetcher saved both and the route served
-      // both, so seven of the fourteen marketplaces silently kept their drawn
-      // mark after a successful fetch that reported "14 saved".
       if (/\.(svg|png|jpg|jpeg|webp|avif|ico)$/i.test(file)) overrides.set(name, file);
     }
   }
@@ -94,12 +94,33 @@ try {
   /* no logo directory is the normal case */
 }
 
+const channelLogoOverrides = new Map<string, string>();
+try {
+  const staticChannelsDir = join(process.cwd(), "static", "channels");
+  if (existsSync(staticChannelsDir)) {
+    for (const file of readdirSync(staticChannelsDir)) {
+      const dot = file.lastIndexOf(".");
+      if (dot <= 0) continue;
+      const name = file.slice(0, dot).toLowerCase();
+      if (/\.(svg|png|jpg|jpeg|webp|avif|ico)$/i.test(file)) {
+        channelLogoOverrides.set(name, file);
+      }
+    }
+  }
+} catch {
+  /* no static channels directory */
+}
+
 export function logoOverrideFile(name: string): string | null {
   return overrides.get(name.toLowerCase()) ?? null;
 }
 
+export function channelLogoFile(name: string): string | null {
+  return channelLogoOverrides.get(name.toLowerCase()) ?? null;
+}
+
 export function hasLogoOverride(name: string): boolean {
-  return overrides.has(name.toLowerCase());
+  return overrides.has(name.toLowerCase()) || channelLogoOverrides.has(name.toLowerCase());
 }
 
 /**
@@ -107,11 +128,17 @@ export function hasLogoOverride(name: string): boolean {
  * otherwise an inline SVG so there is no extra request and nothing to 404.
  */
 export function brandMark(name: string, size = 34): string {
-  if (hasLogoOverride(name)) {
-    return `<img class="mk-mark" src="/logos/${encodeURIComponent(name)}" alt="" width="${size}" height="${size}" loading="lazy">`;
+  const norm = name.toLowerCase();
+  const channelFile = channelLogoFile(norm);
+  if (channelFile) {
+    return `<img class="mk-mark" src="/channels/${encodeURIComponent(channelFile)}" alt="${name}" width="${size}" height="${size}" style="max-height:${size}px;max-width:${Math.round(size * 1.8)}px;object-fit:contain;display:inline-block;vertical-align:middle" loading="lazy">`;
   }
 
-  const b = BRANDS[name] ?? FALLBACK;
+  if (hasLogoOverride(name)) {
+    return `<img class="mk-mark" src="/logos/${encodeURIComponent(name)}" alt="" width="${size}" height="${size}" style="max-height:${size}px;max-width:${Math.round(size * 1.8)}px;object-fit:contain;display:inline-block;vertical-align:middle" loading="lazy">`;
+  }
+
+  const b = BRANDS[norm] ?? FALLBACK;
   const radius = Math.round(size * 0.28);
   return `<svg class="mk-mark" width="${size}" height="${size}" viewBox="0 0 34 34" role="img" aria-hidden="true">
     <rect width="34" height="34" rx="${radius}" fill="${b.bg}"/>

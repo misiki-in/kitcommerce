@@ -470,8 +470,13 @@ JWS02,,Single Ring,120.00,2,Rings,https://example.com/ring.jpg,Stone,Diamond`;
   check("deduplicates images across group", groups[0]?.canonical.images.length, 2);
 
   check("resolves cluster earrings taxonomy id", taxonomyIdForCategory("Earrings>Shop By Style>Cluster Earrings"), 1206);
-  check("resolves general rings taxonomy id", taxonomyIdForCategory("Jewelry>Rings"), 1243);
+  check("resolves general rings taxonomy id", taxonomyIdForCategory("Jewelry>Rings"), 1231);
   check("falls back to default taxonomy id on unknown category", taxonomyIdForCategory("Unknown>Category"), 1);
+
+  const { taxonomyIdForEbayCategory } = await import("./lib/server/connectors/ebay/taxonomy");
+  check("resolves ebay rings category id", taxonomyIdForEbayCategory("Jewelry>Rings"), 67726);
+  check("resolves ebay earrings category id", taxonomyIdForEbayCategory("Earrings>Shop By Style>Cluster Earrings"), 50647);
+  check("resolves ebay default category id for unknown", taxonomyIdForEbayCategory("Unknown>Category"), 11450);
 
   // Database imports table
   db.run("INSERT INTO users (id, email, password_hash, created_at) VALUES ('usr_t', 't@e.com', 'x', 0)");

@@ -9,7 +9,7 @@ export const EBAY_TOKEN_MARGIN_MS = 60_000;
 export const EBAY_ORDER_PAGE_SIZE = 200;
 export const EBAY_ORDER_MAX_PAGES = 10;
 export const EBAY_SCOPES =
-  "https://api.ebay.com/oauth/api_scope/sell.inventory https://api.ebay.com/oauth/api_scope/sell.fulfillment";
+  "https://api.ebay.com/oauth/api_scope/sell.inventory https://api.ebay.com/oauth/api_scope/sell.fulfillment https://api.ebay.com/oauth/api_scope/sell.account";
 
 export const manifest: Manifest = {
   name: "ebay",
@@ -24,11 +24,13 @@ export const manifest: Manifest = {
     fields: [
       { key: "client_id", label: "App ID (Client ID)", secret: false },
       { key: "client_secret", label: "Cert ID (Client Secret)", secret: true },
+      { key: "ru_name", label: "eBay RuName", secret: false, optional: true, help: "From eBay Developer Portal > User Tokens > Your Application Redirect URL." },
       {
         key: "refresh_token",
         label: "User Refresh Token",
         secret: true,
-        help: "Minted when the seller approves the consent flow — the Connect button does this, or see the setup guide for the manual exchange. It is not shown anywhere in the developer portal.",
+        optional: true,
+        help: "Minted automatically when clicking Connect with eBay.",
       },
     ],
   },

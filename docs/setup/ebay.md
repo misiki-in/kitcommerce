@@ -60,82 +60,39 @@ Until one of these is done, every production API call is rejected.
 
 ### 4. Create the OAuth redirect (RuName)
 
-On the Application Keys page click **User Tokens** next to the production
-keyset (direct link: <https://developer.ebay.com/my/auth/?env=production>),
-expand **Get a Token from eBay via Your Application**, and add an eBay Redirect
-URL: a display title, a privacy-policy URL, *Your auth accepted URL* and *Your
-auth declined URL* (both HTTPS; no localhost on production).
+On the Application Keys page click **User Tokens** next to the production keyset (direct link: <https://developer.ebay.com/my/auth/?env=production>), expand **Get a Token from eBay via Your Application**, and add an eBay Redirect URL:
+- **Display Title**: OpenCommerce Sync (or your application name)
+- **Privacy Policy URL**: `https://<your-OpenCommerce-host>/privacy` (or your store URL)
+- **Your auth accepted URL**: `https://<your-OpenCommerce-host>/auth/ebay/callback`
+- **Your auth declined URL**: `https://<your-OpenCommerce-host>/dash/channels?oauth_error=declined`
 
-For the built-in flow, set **Your auth accepted URL** to your installation's
-callback:
+You will receive an **RuName** (formatted like `YourName-AppName-PRD-12345678-abcdef`).
 
+### 5. Server Configuration (Zero-Fuss 1-Click Connect for Sellers)
+
+Set these environment variables on your OpenCommerce server (`.env`) and restart:
+
+```env
+EBAY_CLIENT_ID=Your-App-ID-From-Keyset
+EBAY_CLIENT_SECRET=Your-Cert-ID-From-Keyset
+EBAY_RU_NAME=YourName-AppName-PRD-12345678-abcdef
+OC_PUBLIC_URL=https://your-opencommerce-domain.com
 ```
-https://<your-OpenCommerce-host>/auth/ebay/callback
-```
 
-(that is `OC_PUBLIC_URL` + `/auth/ebay/callback`).
+### 6. User Connection (1-Click Connect)
 
-You receive: an **RuName**, a string shaped like
-`YourName-AppName-PRD-ab12cd34e-5678fghi`. The RuName — *not* your callback
-URL — is what eBay expects in the OAuth `redirect_uri` parameter; OpenCommerce
-handles that as long as `EBAY_RU_NAME` is set.
+Once the server environment variables are configured:
+1. Users go to **Dashboard → Channels → Available Connectors → eBay**.
+2. Click **Connect with eBay**.
+3. Sign in to their eBay Seller account and click **Agree**.
+4. OpenCommerce automatically exchanges the authorization code, stores the encrypted refresh token, and **auto-discovers their business policies (fulfillment, return, payment) and warehouse location**. No manual IDs or curl commands required!
 
-### 5. Prepare the seller account (policies, location, categories)
+### 7. Alternative: Self-Hosted User Connection without Server Environment
 
-These are prerequisites for publishing; the connector's required product
-attributes come from here.
-
-- **Business Policies** — Seller Hub → Account → Business Policies
-  (<https://www.ebay.com/bp/manage>; opt in if prompted). Create a **Payment**
-  policy, a **Return** policy and a **Shipping (fulfillment)** policy for your
-  target marketplace. Their numeric IDs are visible in each policy's edit-page
-  URL. (They are also retrievable via the Sell Account API —
-  `GET /sell/account/v1/fulfillment_policy?marketplace_id=EBAY_US` and
-  siblings — but that API needs the `sell.account` scope, which is not in the
-  connector's token scope; read them from the UI, or fetch once with a
-  separately-scoped token.) These fill the product attributes
-  `ebay_fulfillment_policy_id`, `ebay_payment_policy_id`,
-  `ebay_return_policy_id`.
-- **Inventory location** — offers cannot be published without one, and API
-  locations have no seller-UI equivalent. One-time call with the connector's
-  own token (the `sell.inventory` scope covers it):
-
-  ```
-  POST https://api.ebay.com/sell/inventory/v1/location/<yourLocationKey>
-  {
-    "location": { "address": { "addressLine1": "...", "city": "...",
-      "stateOrProvince": "...", "postalCode": "...", "country": "US" } },
-    "locationTypes": ["WAREHOUSE"],
-    "merchantLocationStatus": "ENABLED",
-    "name": "Main warehouse"
-  }
-  ```
-
-  The key you chose fills `ebay_merchant_location_key`.
-- **Leaf category IDs** — `ebay_category_id` must be a numeric *leaf* category.
-  Use the Taxonomy API
-  (`GET https://api.ebay.com/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=<keywords>`,
-  tree `0` = EBAY_US), or read the category ID off a draft listing on ebay.com.
-
-### 6. Connect (recommended: the built-in OAuth route)
-
-Set these environment variables on the OpenCommerce deployment and restart:
-
-| Variable | Value |
-| --- | --- |
-| `EBAY_CLIENT_ID` | production App ID from step 2 |
-| `EBAY_CLIENT_SECRET` | production Cert ID from step 2 |
-| `EBAY_RU_NAME` | the RuName from step 4 |
-| `EBAY_SANDBOX` | `1` only when using the sandbox keyset; unset for production |
-| `EBAY_SCOPES` | optional; defaults to `sell.inventory` + `sell.fulfillment`, which is all the connector uses |
-| `OC_PUBLIC_URL` | the HTTPS origin eBay redirects back to (must match step 4's accepted URL) |
-
-Then in the dashboard: **Channels → eBay → Connect with eBay**. The seller
-signs in on `auth.ebay.com` and approves the consent screen; eBay redirects to
-`/auth/ebay/callback`, and OpenCommerce exchanges the code and stores the
-App ID, Cert ID and the seller's refresh token as the channel's credentials
-(encrypted). Only the ~18-month refresh token is persisted — two-hour access
-tokens are minted from it automatically on every run.
+If you are running self-hosted without configuring server environment variables:
+1. Open **Channels → eBay**.
+2. In the connection card, enter your **App ID**, **Cert ID**, and **RuName**.
+3. Click **Connect with eBay**. OpenCommerce will execute the grant flow and auto-discover all policies and inventory locations.
 
 ### 7. Alternative: mint the refresh token by hand
 

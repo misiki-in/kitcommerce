@@ -28,8 +28,7 @@ routes.
 | Nykaa | `nykaa` | Gated — issued by the Nykaa integration team | [nykaa.md](./nykaa.md) |
 | Zepto | `zepto` | No public API — curated brand onboarding | [zepto.md](./zepto.md) |
 | Swiggy Instamart | `instamart` | No public API — curated brand onboarding | [instamart.md](./instamart.md) |
-| Blinkit | `blinkit` | No public API — vendor-ID whitelisting | [blinkit.md](./blinkit.md) |
-| Instagram + Facebook | `instagram`, `facebook` | Public (Graph API) — system-user token | [meta.md](./meta.md) |
+| Meta (Facebook & Instagram) | `meta` | Public (Graph API) — App ID & App Secret or System-User Token | [meta.md](./meta.md) |
 | TikTok Shop | `tiktok` | Public (Open Platform) — app + shop authorization | [tiktok.md](./tiktok.md) |
 | eBay | `ebay` | Public (Sell APIs) — keyset + built-in OAuth | [ebay.md](./ebay.md) |
 | Etsy | `etsy` | Public (Open API v3) — app + built-in OAuth | [etsy.md](./etsy.md) |

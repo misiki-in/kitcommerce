@@ -52,15 +52,41 @@ export const META_OPTION_FIELDS: Record<string, string> = {
 export const metaAuth: Manifest["authentication"] = {
   type: "oauth2_access_token",
   fields: [
-    { key: "catalog_id", label: "Catalog ID", secret: false },
+    {
+      key: "app_id",
+      label: "App ID / Client ID",
+      secret: false,
+      optional: true,
+      help: "Meta App ID from Meta for Developers (developers.facebook.com/apps). Needed for 1-Click Connect & automated token refresh.",
+    },
+    {
+      key: "app_secret",
+      label: "App Secret",
+      secret: true,
+      optional: true,
+      help: "Meta App Secret from Meta for Developers → App settings → Basic.",
+    },
+    {
+      key: "catalog_id",
+      label: "Catalog ID",
+      secret: false,
+      optional: true,
+      help: "Catalog ID from Meta Commerce Manager (Settings → Catalog). If left empty, will be auto-discovered upon connect or refresh.",
+    },
+    {
+      key: "access_token",
+      label: "System User / OAuth Access Token",
+      secret: true,
+      optional: true,
+      help: "Generated via 1-Click Connect, or System User Access Token from Business Settings → System users with catalog_management and business_management scopes.",
+    },
     {
       key: "business_id",
       label: "Business ID",
       secret: false,
       optional: true,
-      help: "Business Settings → Business info. Not needed for catalogue calls",
+      help: "Business Settings → Business info. Auto-discovered or informational.",
     },
-    { key: "access_token", label: "System User Access Token", secret: true },
   ],
 };
 
@@ -75,6 +101,15 @@ export const META_CAPABILITIES: Capabilities = {
   webhooks: false,
   bulkOperations: true,
   variants: true,
+};
+
+export const META_SPEC: MetaSpec = {
+  name: "meta",
+  displayName: "Meta (Facebook & Instagram)",
+  idPrefix: "META",
+  regions: ["IN", "US", "GB", "AE", "SG", "AU", "CA", "DE", "BR", "FR", "IT", "ES", "JP"],
+  credentialsNote:
+    "Meta Commerce synchronizes products to a shared catalogue for both Facebook Shop and Instagram Shopping. Connect automatically using your Meta App ID & App Secret, or provide a System User Access Token and Catalog ID from Meta Commerce Manager.",
 };
 
 export const INSTAGRAM_SPEC: MetaSpec = {

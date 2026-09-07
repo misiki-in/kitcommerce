@@ -4,6 +4,7 @@ import { authz, planner, repo } from "$server/app";
 import { getConnector } from "$server/connectors";
 import { brandMark } from "$server/connectors/brand";
 import { missingRequiredFields } from "$server/connector";
+import { deleteProductFromChannel } from "$server/connectors/service";
 
 export const load: PageServerLoad = async ({ locals, params }) => {
   if (!authz.canAccessProduct(locals.principal!, params.id)) error(404, "Product not found");
@@ -91,6 +92,16 @@ export const actions: Actions = {
   delete: async ({ locals, params }) => {
     if (!authz.canAccessProduct(locals.principal!, params.id)) error(403, "forbidden");
     const product = repo.getProduct(params.id)!;
+    const mappings = repo.mappingsForProduct(product.id);
+    for (const m of mappings) {
+      if (m.remote_product_id) {
+        try {
+          await deleteProductFromChannel(repo, m.channel_id, product.id);
+        } catch (delErr: any) {
+          console.error(`[Product Detail Delete] Remote delete failed for channel ${m.channel_id}:`, delErr.message);
+        }
+      }
+    }
     repo.deleteProduct(product.id);
     redirect(303, "/dash/products");
   },

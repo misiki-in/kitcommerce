@@ -14,7 +14,7 @@ import { flipkart } from "./flipkart";
 import { meesho } from "./meesho";
 import { ajio, jiomart, myntra, nykaa, snapdeal, tatacliq } from "./india";
 import { blinkit, instamart, zepto } from "./quickcommerce";
-import { facebook, instagram } from "./social";
+import { meta } from "./social";
 import { tiktok } from "./tiktok";
 
 export const connectors: Record<string, MarketplaceConnector> = {
@@ -34,9 +34,8 @@ export const connectors: Record<string, MarketplaceConnector> = {
   instamart,
   blinkit,
   // Social — a catalogue browsed in-feed, not a marketplace. Meta's two
-  // surfaces share one catalogue; TikTok Shop is absent from India entirely.
-  instagram,
-  facebook,
+  // surfaces (Facebook & Instagram) share one catalogue; TikTok Shop is absent from India entirely.
+  meta,
   tiktok,
   // Global
   ebay,

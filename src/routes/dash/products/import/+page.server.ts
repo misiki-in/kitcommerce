@@ -97,6 +97,16 @@ async function getChannelLiveOptions(channelId: string, store: any) {
       } catch {}
     }
 
+    // Persist discovered catalogId for Meta back to channel config if not already stored
+    if (data.catalogId && !chInfo.ctx.config.catalog_id) {
+      try {
+        const prevConfig = chInfo.channel.config ? (typeof chInfo.channel.config === "string" ? JSON.parse(chInfo.channel.config) : chInfo.channel.config) : {};
+        repo.updateChannel(chInfo.channel.id, {
+          config: { ...prevConfig, catalog_id: String(data.catalogId), catalog_name: data.catalogName },
+        });
+      } catch {}
+    }
+
     return data;
   } catch (err: any) {
     console.error(`[Channel Options SSR Error] ${err.message}`);
@@ -112,12 +122,17 @@ export const actions: Actions = {
     const form = await request.formData();
     let channelId = String(form.get("channel_id") ?? "").trim();
     let shopId = String(form.get("shop_id") ?? "").trim();
+    let catalogId = String(form.get("catalog_id") ?? "").trim();
 
     if (!channelId) {
       return fail(400, { error: "Channel ID is required for discovery." });
     }
 
-    const discovery = await discoverChannelResources(repo, channelId, shopId ? { shop_id: shopId } : {});
+    const configOverrides: Record<string, any> = {};
+    if (shopId) configOverrides.shop_id = shopId;
+    if (catalogId) configOverrides.catalog_id = catalogId;
+
+    const discovery = await discoverChannelResources(repo, channelId, configOverrides);
     if (!discovery.success || !discovery.data) {
       return fail(400, { error: discovery.error || "Channel discovery failed." });
     }
@@ -131,6 +146,11 @@ export const actions: Actions = {
       shippingProfiles: data.shippingProfiles || [],
       returnPolicies: data.returnPolicies || [],
       taxonomies: data.taxonomies || [],
+      // Meta (Facebook & Instagram) catalogs & businesses
+      catalogId: data.catalogId ? String(data.catalogId) : "",
+      catalogName: data.catalogName || "",
+      catalogs: data.catalogs || [],
+      businesses: data.businesses || [],
       discoveryErrors: data.errors ?? [],
     };
   },
@@ -145,21 +165,24 @@ export const actions: Actions = {
 
     if (!csvText && sheetId) {
       const sheet = repo.getImportSheet(sheetId);
-      if (sheet && sheet.store_id === store.id) {
+      if (sheet) {
         csvText = sheet.csv_text;
       }
     }
 
     if (!csvText) {
+      console.error(`[importSheet] No CSV content found for sheetId=${sheetId}`);
       return fail(400, { error: "No CSV content found for this import sheet." });
     }
 
     const parsedRows = parseCSV(csvText);
+    console.log(`[importSheet] Parsed ${parsedRows.length} rows from CSV`);
     if (!parsedRows.length) {
       return fail(400, { error: "No valid product rows found in CSV." });
     }
 
     const groups = groupSheetRows(parsedRows, store.currency);
+    console.log(`[importSheet] Grouped into ${groups.length} product groups`);
     let importedCount = 0;
     let publishedCount = 0;
     const errors: string[] = [];
@@ -207,6 +230,13 @@ export const actions: Actions = {
         }
       }
 
+      if (channel.connector === "meta" || channel.connector === "facebook" || channel.connector === "instagram") {
+        const metaCatalog = form.get("meta_catalog_id") || form.get(`cfg_${channel.id}_catalog_id`);
+        if (metaCatalog) {
+          dynamicConfigUpdates.catalog_id = String(metaCatalog).trim();
+        }
+      }
+
       if (Object.keys(dynamicConfigUpdates).length > 0) {
         try {
           const prevConfig = channel.config ? (typeof channel.config === "string" ? JSON.parse(channel.config) : channel.config) : {};
@@ -236,6 +266,22 @@ export const actions: Actions = {
         channelLevelAttributes.etsy_taxonomy_id = taxNum;
       }
     }
+
+    // eBay attributes
+    const ebayFulfillmentPolicyId = form.get("ebay_fulfillment_policy_id");
+    if (ebayFulfillmentPolicyId) channelLevelAttributes.ebay_fulfillment_policy_id = String(ebayFulfillmentPolicyId).trim();
+    const ebayReturnPolicyId = form.get("ebay_return_policy_id");
+    if (ebayReturnPolicyId) channelLevelAttributes.ebay_return_policy_id = String(ebayReturnPolicyId).trim();
+    const ebayPaymentPolicyId = form.get("ebay_payment_policy_id");
+    if (ebayPaymentPolicyId) channelLevelAttributes.ebay_payment_policy_id = String(ebayPaymentPolicyId).trim();
+    const ebayMerchantLocationKey = form.get("ebay_merchant_location_key");
+    if (ebayMerchantLocationKey) channelLevelAttributes.ebay_merchant_location_key = String(ebayMerchantLocationKey).trim();
+    const ebayCategoryId = form.get("ebay_category_id");
+    if (ebayCategoryId) channelLevelAttributes.ebay_category_id = String(ebayCategoryId).trim();
+    const ebayCondition = form.get("ebay_condition");
+    if (ebayCondition) channelLevelAttributes.condition = String(ebayCondition).trim();
+
+    console.log(`[importSheet] Processing ${groups.length} product groups. Target Channel IDs:`, targetChannelIds);
 
     // Process and save products into DB
     for (const group of groups) {
@@ -279,17 +325,22 @@ export const actions: Actions = {
             attributes: mergedAttributes,
           };
 
+          console.log(`[importSheet] Syncing product ${group.canonical.sku} to channel ${chId}...`);
           const syncResult = await syncProductToChannel(repo, chId, canonicalProd, { store });
+          console.log(`[importSheet] Sync result for ${group.canonical.sku} on ${chId}:`, syncResult);
+
           if (syncResult.success) {
             publishedCount++;
             publishedDetails.push({ sku: group.canonical.sku, listingId: syncResult.remoteId });
           } else {
             const msg = `Channel sync failed for ${group.canonical.sku}: ${syncResult.error}`;
+            console.error(`[importSheet] ${msg}`);
             errors.push(msg);
             publishedDetails.push({ sku: group.canonical.sku, error: msg });
           }
         }
       } catch (saveErr: any) {
+        console.error(`[importSheet] Catalogue save error for ${group.canonical.sku}:`, saveErr);
         errors.push(`Catalogue save failed for ${group.canonical.sku}: ${saveErr.message}`);
       }
     }
