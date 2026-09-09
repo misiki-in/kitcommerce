@@ -59,7 +59,7 @@
       links: [
         { label: "License (MIT)", href: LINKS.license },
         { label: "Terms", href: LINKS.terms },
-        { label: "How your data is handled", href: "#privacy" },
+        { label: "Privacy Policy", href: "/privacy" },
         { label: "Report a vulnerability", href: LINKS.security },
         { label: "Contact", href: LINKS.contact },
       ],
