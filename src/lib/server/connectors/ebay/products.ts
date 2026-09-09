@@ -2,7 +2,16 @@
  * eBay inventory item and offer creation/update logic.
  */
 import { money, type CanonicalProduct, type ConnectorContext, type RemoteProduct } from "../../connector";
-import { call, cm, marketplaceId, discoverAllEbayResources, ensureEbayLocation, ensureValidFulfillmentPolicy } from "./api";
+import {
+  call,
+  cm,
+  marketplaceId,
+  discoverAllEbayResources,
+  ensureEbayLocation,
+  ensureValidFulfillmentPolicy,
+  ensureValidReturnPolicy,
+  ensureValidPaymentPolicy,
+} from "./api";
 import { taxonomyIdForEbayCategory } from "./taxonomy";
 
 export function inventoryItemBody(p: CanonicalProduct) {
@@ -35,6 +44,51 @@ export function inventoryItemBody(p: CanonicalProduct) {
   cleanAspects["Brand"] = [brandVal];
   cleanAspects["MPN"] = [mpnVal];
 
+  // Derive category-specific mandatory aspects for eBay (e.g. Style for Earrings/Rings/Jewelry/Clothing)
+  const fullCategoryText = [p.category, p.title, ...(p.tags || [])].filter(Boolean).join(" ").toLowerCase();
+
+  // Style derivation (mandatory for Earrings, Rings, Necklaces, Dresses, Tops)
+  if (fullCategoryText.includes("cluster")) {
+    cleanAspects["Style"] = ["Cluster"];
+  } else if (fullCategoryText.includes("halo")) {
+    cleanAspects["Style"] = ["Halo"];
+  } else if (fullCategoryText.includes("stud")) {
+    cleanAspects["Style"] = ["Stud"];
+  } else if (fullCategoryText.includes("hoop")) {
+    cleanAspects["Style"] = ["Hoop"];
+  } else if (fullCategoryText.includes("drop") || fullCategoryText.includes("dangle")) {
+    cleanAspects["Style"] = ["Dangle/Drop"];
+  } else if (fullCategoryText.includes("huggie")) {
+    cleanAspects["Style"] = ["Huggie"];
+  } else if (fullCategoryText.includes("solitaire")) {
+    cleanAspects["Style"] = ["Solitaire"];
+  } else if (fullCategoryText.includes("band") || fullCategoryText.includes("wedding")) {
+    cleanAspects["Style"] = ["Band"];
+  } else if (fullCategoryText.includes("pendant")) {
+    cleanAspects["Style"] = ["Pendant"];
+  } else if (fullCategoryText.includes("earring")) {
+    cleanAspects["Style"] = ["Stud"];
+  } else if (fullCategoryText.includes("ring")) {
+    cleanAspects["Style"] = ["Solitaire"];
+  } else if (fullCategoryText.includes("dress")) {
+    cleanAspects["Style"] = ["A-Line"];
+  } else if (fullCategoryText.includes("shirt") || fullCategoryText.includes("top")) {
+    cleanAspects["Style"] = ["Basic"];
+  } else {
+    cleanAspects["Style"] = ["Fashion"];
+  }
+
+  // Type derivation (Earrings, Rings, Necklaces, etc.)
+  if (fullCategoryText.includes("earring")) {
+    cleanAspects["Type"] = ["Earrings"];
+  } else if (fullCategoryText.includes("ring")) {
+    cleanAspects["Type"] = ["Ring"];
+  } else if (fullCategoryText.includes("necklace")) {
+    cleanAspects["Type"] = ["Necklace"];
+  } else if (fullCategoryText.includes("bracelet")) {
+    cleanAspects["Type"] = ["Bracelet"];
+  }
+
   for (const [k, rawVal] of Object.entries(p.attributes || {})) {
     const normKey = k ? k.trim() : "";
     if (
@@ -63,7 +117,9 @@ export function inventoryItemBody(p: CanonicalProduct) {
     }
 
     if (strValues.length > 0) {
-      cleanAspects[normKey] = strValues;
+      // Capitalize first letter of aspect key for standard eBay naming (e.g. style -> Style)
+      const capitalizedKey = normKey.charAt(0).toUpperCase() + normKey.slice(1);
+      cleanAspects[capitalizedKey] = strValues;
     }
   }
 
@@ -149,15 +205,18 @@ export async function createProduct(ctx: ConnectorContext, p: CanonicalProduct):
 
   // Ensure fulfillment policy has at least one valid shipping option
   fulfillmentPolicyId = await ensureValidFulfillmentPolicy(ctx, fulfillmentPolicyId);
+  returnPolicyId = await ensureValidReturnPolicy(ctx, returnPolicyId);
+  paymentPolicyId = await ensureValidPaymentPolicy(ctx, paymentPolicyId);
 
-  // Ensure the location exists and is registered on eBay before creating offer
+  // Ensure the location exists and is registered on eBay using demographic info from Account Settings
   merchantLocationKey = await ensureEbayLocation(ctx, merchantLocationKey);
 
-  // 3. Category resolution
-  const categoryId =
-    a.ebay_category_id ||
-    ctx.config.ebay_category_id ||
-    (p.category ? String(taxonomyIdForEbayCategory(p.category)) : "11450");
+  // 3. Category resolution: Compute dynamic leaf category for this specific product first
+  let resolvedCat = (p.category || (p.tags && p.tags.join(",")) || p.title)
+    ? String(taxonomyIdForEbayCategory(p.category || (p.tags && p.tags.join(",")) || p.title))
+    : "";
+
+  const categoryId = a.ebay_category_id || resolvedCat || ctx.config.ebay_category_id || "67726";
 
   const listingPolicies: Record<string, string> = {};
   if (fulfillmentPolicyId) listingPolicies.fulfillmentPolicyId = String(fulfillmentPolicyId);
@@ -231,7 +290,7 @@ export async function createProduct(ctx: ConnectorContext, p: CanonicalProduct):
     }
   }
 
-  // 6. Publish offer with auto-recovery if fulfillment policy needs update
+  // 6. Publish offer with auto-recovery for fulfillment policy or leaf category errors
   let published: any = null;
   if (offerId) {
     try {
@@ -244,13 +303,41 @@ export async function createProduct(ctx: ConnectorContext, p: CanonicalProduct):
       ctx.log(`[eBay createProduct] Successfully published offer ${offerId} -> listing ID: ${listingId}`);
     } catch (pubErr: any) {
       const errStr = String(pubErr.message || "");
+      let recovered = false;
+
+      // Auto-recovery 1: Non-leaf category selected (error 25005)
+      if (errStr.includes("25005") || errStr.includes("not a leaf category")) {
+        ctx.log(`[eBay createProduct] Error 25005: Non-leaf category detected. Dynamically falling back to leaf category for '${p.category || p.title}'...`);
+        const leafCat = String(taxonomyIdForEbayCategory(p.category || (p.tags && p.tags.join(",")) || p.title || "jewelry"));
+        offerBody.categoryId = leafCat;
+        recovered = true;
+      }
+
+      // Auto-recovery 2: Fulfillment policy invalid or missing services (error 25007)
       if (errStr.includes("25007") || errStr.includes("Fulfillment policy") || errStr.includes("shipping service option")) {
-        // Attempt recovery: re-create/resolve valid fulfillment policy, update offer, and retry publish
         ctx.log(`[eBay createProduct] Fulfillment policy 25007 encountered. Auto-resolving valid shipping policy and retrying offer publish...`);
         const validPolicyId = await ensureValidFulfillmentPolicy(ctx);
-        if (validPolicyId && validPolicyId !== listingPolicies.fulfillmentPolicyId) {
+        if (validPolicyId) {
           listingPolicies.fulfillmentPolicyId = validPolicyId;
           offerBody.listingPolicies = listingPolicies;
+          recovered = true;
+        }
+      }
+
+      // Auto-recovery 3: Missing mandatory aspect like Style (error 25002)
+      if (errStr.includes("25002") || errStr.includes("item specific") || errStr.includes("missing")) {
+        ctx.log(`[eBay createProduct] Aspect error 25002 encountered. Refreshing inventory item specifics and retrying...`);
+        try {
+          await call(ctx, `/sell/inventory/v1/inventory_item/${encodeURIComponent(p.sku)}`, {
+            method: "PUT",
+            body: JSON.stringify(inventoryItemBody(p)),
+          });
+          recovered = true;
+        } catch {}
+      }
+
+      if (recovered) {
+        try {
           await call(ctx, `/sell/inventory/v1/offer/${offerId}`, {
             method: "PUT",
             body: JSON.stringify(offerBody),
@@ -261,10 +348,14 @@ export async function createProduct(ctx: ConnectorContext, p: CanonicalProduct):
             { method: "POST" },
           );
           listingId = published?.listingId || listingId;
-          ctx.log(`[eBay createProduct] Successfully recovered and published offer ${offerId} with policy ${validPolicyId} -> listing ID: ${listingId}`);
+          ctx.log(`[eBay createProduct] Successfully recovered and published offer ${offerId} -> listing ID: ${listingId}`);
           return { remoteId: listingId ?? offerId ?? p.sku, raw: { offerId, listingId, published } };
+        } catch (retryErr: any) {
+          ctx.log(`[eBay createProduct] Retry publish failed for ${offerId}: ${retryErr.message}`);
+          throw retryErr;
         }
       }
+
       ctx.log(`[eBay createProduct] Offer publish failed for ${offerId}: ${pubErr.message}`);
       throw pubErr;
     }

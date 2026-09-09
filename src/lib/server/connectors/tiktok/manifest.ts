@@ -13,7 +13,7 @@ export const manifest: Manifest = {
   version: "0.1.0",
   platformType: "social",
   group: "Social",
-  status: "ready",
+  status: "development",
   idPrefix: "TTS",
   authentication: {
     type: "oauth2_authorization_code",

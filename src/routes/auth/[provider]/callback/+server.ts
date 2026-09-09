@@ -6,7 +6,6 @@ import { localSecrets } from "$server/drivers";
 import { newId } from "$server/ids";
 import { getConnector } from "$server/connectors";
 import { callbackUrl, oauthProvider } from "$server/oauth";
-import { getMeShops } from "$server/connectors/etsy";
 
 const secrets = localSecrets(config.secretKey);
 
@@ -25,7 +24,7 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
   // The seller pressed "cancel" on the consent screen, or the marketplace
   // rejected the request outright.
   const denied = url.searchParams.get("error");
-  if (denied) back(`oauth_error=${encodeURIComponent(denied)}`);
+  if (denied) return back(`oauth_error=${encodeURIComponent(denied)}`);
 
   const query = Object.fromEntries(url.searchParams);
   const code = query[provider.codeParam ?? "code"];
@@ -43,17 +42,17 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
   cookies.delete("oc_oauth_shared_secret", scope);
   cookies.delete("oc_oauth_redirect_uri", scope);
 
-  if (!code) back("oauth_error=no+code+returned");
+  if (!code) return back("oauth_error=no+code+returned");
 
   if (!state || !expectedState || state !== expectedState) {
-    back("oauth_error=the+link+expired,+please+try+again");
+    return back("oauth_error=the+link+expired,+please+try+again");
   }
   if (provider.pkce && !verifier) {
-    back("oauth_error=the+link+expired,+please+try+again");
+    return back("oauth_error=the+link+expired,+please+try+again");
   }
 
   const store = repo.storesForOrg(locals.principal!.organizationId)[0];
-  if (!store) back("oauth_error=no+store");
+  if (!store) return back("oauth_error=no+store");
 
   let result;
   try {
@@ -67,66 +66,34 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
     });
   } catch (e) {
     const detail = e instanceof Error ? e.message.slice(0, 200) : "token exchange failed";
-    back(`oauth_error=${encodeURIComponent(detail)}`);
+    return back(`oauth_error=${encodeURIComponent(detail)}`);
   }
 
-  const manifest = getConnector(provider.connector).manifest();
+  const connector = getConnector(provider.connector);
+  const manifest = connector.manifest();
 
   const existing = repo.listChannels(store.id).find((c) => c.connector === provider.connector);
 
-  let initialConfig = result!.channelConfig ?? {};
+  let initialConfig: Record<string, any> = { ...(result!.channelConfig ?? {}) };
 
-  // Auto-detect Etsy Shop ID if connector is Etsy
-  if (provider.connector === "etsy") {
+  // Dynamic Plug-and-Play Discovery: If connector implements discover(), run it automatically
+  if (typeof connector.discover === "function") {
     try {
-      const creds = result!.credentials;
-      const ctx: any = {
-        config: {},
-        credentials: creds,
-        seller: { storeName: store.name, currency: store.currency },
-        log: () => {},
-      };
-      const shops = await getMeShops(ctx);
-      if (shops && shops[0]) {
-        initialConfig = { ...initialConfig, shop_id: String(shops[0].shop_id), shop_name: shops[0].shop_name };
-      }
-    } catch {}
-  }
-
-  // Auto-detect Meta Catalog ID if connector is Meta
-  if ((provider.connector === "meta" || provider.connector === "facebook" || provider.connector === "instagram") && !initialConfig.catalog_id) {
-    try {
-      const { discoverAllMetaResources } = await import("$server/connectors/social");
-      const creds = result!.credentials;
-      const ctx: any = {
+      const { normalizeDiscoveredConfig } = await import("$server/connectors/service");
+      const ctx = {
         config: initialConfig,
-        credentials: creds,
-        seller: { storeName: store.name, currency: store.currency },
-        log: () => {},
-      };
-      const disc = await discoverAllMetaResources(ctx);
-      if (disc.catalogId) {
-        initialConfig = {
-          ...initialConfig,
-          catalog_id: disc.catalogId,
-          catalog_name: disc.catalogName,
-          discovered_catalogs: disc.catalogs,
-          discovered_businesses: disc.businesses,
-        };
-      }
-    } catch {}
-  }
-
-  // Auto-detect eBay Business Policies and Location if connector is eBay
-  if (provider.connector === "ebay") {
-    try {
-      const { discoverAllEbayResources } = await import("$server/connectors/ebay");
-      const creds = result!.credentials;
-      const ctx: any = {
-        config: initialConfig,
-        credentials: creds,
+        credentials: result!.credentials,
         seller: {
           storeName: store.name,
+          description: store.description,
+          logoUrl: store.logo_url,
+          legalName: store.legal_name,
+          businessType: store.business_type,
+          taxId: store.tax_id,
+          registrationNo: store.registration_no,
+          supportEmail: store.support_email,
+          supportPhone: store.support_phone,
+          website: store.website,
           currency: store.currency,
           address: {
             line1: store.address_line1,
@@ -139,21 +106,15 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
         },
         log: () => {},
       };
-      const disc = await discoverAllEbayResources(ctx);
-      if (disc.defaultFulfillmentPolicyId) {
-        initialConfig = {
-          ...initialConfig,
-          ebay_fulfillment_policy_id: disc.defaultFulfillmentPolicyId,
-          ebay_return_policy_id: disc.defaultReturnPolicyId,
-          ebay_payment_policy_id: disc.defaultPaymentPolicyId,
-          ebay_merchant_location_key: disc.defaultMerchantLocationKey,
-          discovered_fulfillment_policies: disc.fulfillmentPolicies,
-          discovered_return_policies: disc.returnPolicies,
-          discovered_payment_policies: disc.paymentPolicies,
-          discovered_locations: disc.locations,
-        };
+
+      const discoveredData = await connector.discover(ctx);
+      if (discoveredData && typeof discoveredData === "object") {
+        const normalized = normalizeDiscoveredConfig(provider.connector, discoveredData);
+        initialConfig = { ...initialConfig, ...normalized };
       }
-    } catch {}
+    } catch (discErr) {
+      console.warn(`[OAuth Callback Discovery Note] ${provider.connector}:`, discErr);
+    }
   }
 
   const channel =
@@ -168,10 +129,12 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
     });
 
   if (existing && Object.keys(initialConfig).length > 0) {
-    let existingCfg = {};
-    try { existingCfg = JSON.parse(existing.config || "{}"); } catch {}
+    let existingCfg: Record<string, unknown> = {};
+    try {
+      existingCfg = typeof existing.config === "string" ? JSON.parse(existing.config || "{}") : (existing.config || {});
+    } catch {}
     const mergedCfg = { ...existingCfg, ...initialConfig };
-    repo.updateChannel(channel.id, { config: JSON.stringify(mergedCfg) });
+    repo.updateChannel(channel.id, { config: mergedCfg });
   }
 
   const sealed = await secrets.seal(result!.credentials);
@@ -212,12 +175,12 @@ export const GET: RequestHandler = async ({ params, url, cookies, locals }) => {
   repo.audit({
     orgId: locals.principal!.organizationId,
     storeId: store.id,
-    actorUserId: locals.principal!.userId,
+    actorUserId: locals.principal!.user.id,
     action: "channel.connected",
     entityType: "channel",
     entityId: channel.id,
     metadata: { connector: provider.connector, via: "oauth" },
   });
 
-  back(`connected=${encodeURIComponent(channel.name)}`);
+  return back(`connected=${encodeURIComponent(channel.name)}`);
 };

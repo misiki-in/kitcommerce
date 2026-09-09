@@ -227,10 +227,11 @@ export function groupSheetRows(rows: ParsedSheetRow[], storeCurrency = "USD"): S
   const groupsMap = new Map<string, ParsedSheetRow[]>();
 
   for (const r of activeRows) {
+    const styleCode = clean(r["Style Code"] || r["stylecode"] || r["Style code"] || r["StyleCode"]);
     const groupedSku = clean(r["Grouped SKU"] || r["groupedsku"] || r["Group SKU"]);
     const parentSku = clean(r["Parent SKU"] || r["parentsku"] || r["Parent"]);
     const sku = clean(r["SKU"] || r["sku"] || r["Item Code"] || r["itemcode"] || r["Handle"] || r["handle"]) || "UNNAMED";
-    const groupKey = groupedSku || parentSku || sku;
+    const groupKey = styleCode || groupedSku || parentSku || sku;
 
     if (!groupsMap.has(groupKey)) {
       groupsMap.set(groupKey, []);
@@ -303,6 +304,20 @@ export function groupSheetRows(rows: ParsedSheetRow[], storeCurrency = "USD"): S
       customAttrs[name] = val;
     }
 
+    const styleCodeVal = clean(primary["Style Code"] || primary["stylecode"] || primary["Style code"] || primary["StyleCode"]);
+    const slugVal = clean(
+      primary["Slug"] ||
+      primary["slug"] ||
+      primary["Handle"] ||
+      primary["handle"] ||
+      primary["URL Handle"] ||
+      primary["Url Handle"] ||
+      primary["url_handle"] ||
+      primary["Product URL"] ||
+      primary["URL"] ||
+      primary["url"]
+    );
+
     result.push({
       groupKey,
       primaryRow: primary,
@@ -323,6 +338,8 @@ export function groupSheetRows(rows: ParsedSheetRow[], storeCurrency = "USD"): S
         images,
         attributes: {
           ...customAttrs,
+          slug: slugVal || undefined,
+          style_code: styleCodeVal || undefined,
           tags,
           materials,
           is_customizable: isCustomizable,

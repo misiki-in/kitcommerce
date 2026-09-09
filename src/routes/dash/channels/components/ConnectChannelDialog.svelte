@@ -563,39 +563,36 @@
           <div>
             <Dialog.Title>{connector.already ? `Add another ${connector.displayName} account` : `Connect ${connector.displayName}`}</Dialog.Title>
             <Dialog.Description>
-              {connector.regions.join(", ")} · {connector.authType} · {connector.rps}/s
+              {connector.authType} authentication · {connector.rps} requests/sec
             </Dialog.Description>
           </div>
         </div>
       </Dialog.Header>
 
       <!-- ═══════════════════════════════════════════════════════════════ -->
-      <!-- 1-CLICK ETSY OAUTH FLOW (COMPLETELY AUTOMATED) -->
+      <!-- ETSY OAUTH FLOW -->
       <!-- ═══════════════════════════════════════════════════════════════ -->
       {#if connector.name === "etsy"}
-        <div class="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-4">
+        <div class="rounded-xl border bg-card p-4 space-y-4 shadow-sm">
           <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <Sparkles class="size-4 text-primary" />
-              <span class="text-sm font-bold text-foreground">1-Click Automated Connection</span>
-            </div>
-            <Badge variant="success">Recommended</Badge>
+            <span class="text-sm font-semibold text-foreground">Etsy Account Authorization</span>
+            <Badge variant="outline" class="text-[11px] font-medium">OAuth 2.0</Badge>
           </div>
 
           <p class="text-xs text-muted-foreground leading-relaxed">
-            Enter your <strong>Keystring</strong> (and optional Shared Secret), then click Connect. You will approve on Etsy and be returned here with everything configured automatically.
+            Link your Etsy shop to automatically synchronize listings, inventory, and order fulfillment. Authorize securely using your Etsy API Keystring.
           </p>
 
           <div class="grid gap-3 sm:grid-cols-2">
             <Field
-              label="Keystring (x-api-key)"
+              label="Etsy Keystring (x-api-key)"
               name="quick_keystring"
               required
               placeholder="e.g. xfntq5ua34db6l1lxr0bsp4r"
               bind:value={credValues["api_key"]}
             />
             <Field
-              label="Shared secret"
+              label="Shared Secret (Optional)"
               name="quick_shared_secret"
               type="password"
               placeholder="e.g. cdeacycl9q"
@@ -603,16 +600,16 @@
             />
           </div>
 
-          <div class="space-y-1 text-xs">
-            <span class="font-medium text-foreground">Callback / Redirect URI</span>
+          <div class="space-y-1.5 text-xs">
+            <span class="font-medium text-foreground">Redirect URI</span>
             <input
               type="text"
               bind:value={redirectUri}
               placeholder="e.g. http://localhost:5173/auth/etsy/callback or https://localhost"
               class="flex h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono"
             />
-            <p class="text-[10px] text-muted-foreground">
-              Must match one of the <strong>Callback URLs</strong> in your Etsy Developer App settings at <a href="https://www.etsy.com/developers/your-apps" target="_blank" rel="noopener" class="underline text-primary">etsy.com/developers</a>.
+            <p class="text-[11px] text-muted-foreground">
+              Must match one of the registered Callback URLs in your <a href="https://www.etsy.com/developers/your-apps" target="_blank" rel="noopener" class="underline hover:text-foreground text-primary">Etsy Developer Apps</a> console.
             </p>
           </div>
 
@@ -625,10 +622,10 @@
 
           <Button
             type="button"
-            class="w-full gap-2 font-semibold shadow-sm"
+            class="w-full gap-2 font-medium"
             onclick={startOneClickEtsyOAuth}
           >
-            Connect with Etsy
+            Authorize on Etsy
             <ArrowRight class="size-4" />
           </Button>
         </div>
@@ -640,7 +637,7 @@
             onclick={() => (showAdvancedTokens = !showAdvancedTokens)}
             class="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
           >
-            Manual Token Setup & Advanced Tools
+            Manual Token Setup & Configuration
             <ChevronDown class="size-3 transition-transform {showAdvancedTokens ? 'rotate-180' : ''}" />
           </button>
           <span class="h-px flex-1 bg-border"></span>
@@ -648,40 +645,37 @@
       {/if}
 
       <!-- ═══════════════════════════════════════════════════════════════ -->
-      <!-- 1-CLICK META OAUTH FLOW (ZERO-CREDENTIALS LOGIN WITH FACEBOOK) -->
+      <!-- META (FACEBOOK & INSTAGRAM) OAUTH FLOW -->
       <!-- ═══════════════════════════════════════════════════════════════ -->
       {#if isMeta(connector.name)}
-        <div class="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-4">
+        <div class="rounded-xl border bg-card p-4 space-y-4 shadow-sm">
           <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <Sparkles class="size-4 text-primary" />
-              <span class="text-sm font-bold text-foreground">1-Click Facebook & Instagram Connect</span>
-            </div>
-            <Badge variant="success">Zero Config</Badge>
+            <span class="text-sm font-semibold text-foreground">Meta Business Authorization</span>
+            <Badge variant="outline" class="text-[11px] font-medium">Facebook & Instagram</Badge>
           </div>
 
           <p class="text-xs text-muted-foreground leading-relaxed">
-            Click below to sign in with your Facebook or Instagram business account. OpenCommerce will request access to your commerce catalogues (<strong>catalog_management</strong>, <strong>business_management</strong>) and synchronize your products automatically.
+            Connect your Facebook and Instagram business catalogs to publish product feeds and sync inventory across Meta commerce surfaces.
           </p>
 
           {#if !connector.hasServerOAuth && !credValues["app_id"]}
-            <div class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs space-y-2">
-              <div class="flex items-center gap-1.5 font-medium text-amber-900 dark:text-amber-200">
-                <AlertCircle class="size-3.5" />
-                <span>Self-Hosted Server Notice</span>
+            <div class="rounded-lg border bg-muted/40 p-3.5 text-xs space-y-2.5">
+              <div class="flex items-center gap-1.5 font-medium text-foreground">
+                <AlertCircle class="size-3.5 text-muted-foreground" />
+                <span>Meta App Credentials</span>
               </div>
               <p class="text-[11px] text-muted-foreground leading-relaxed">
-                Set <code>META_APP_ID</code> and <code>META_APP_SECRET</code> in your server's <code>.env</code> file to enable instant 1-click login for all users, or enter your Meta App ID & Secret below.
+                Provide your Meta App ID and Secret below, or configure <code>META_APP_ID</code> and <code>META_APP_SECRET</code> in your environment.
               </p>
               <div class="grid gap-2.5 sm:grid-cols-2 pt-1">
                 <Field
-                  label="Meta App ID"
+                  label="App ID"
                   name="quick_app_id"
                   placeholder="e.g. 159283746192837"
                   bind:value={credValues["app_id"]}
                 />
                 <Field
-                  label="Meta App Secret"
+                  label="App Secret"
                   name="quick_app_secret"
                   type="password"
                   placeholder="e.g. 4a8b9c0d1e2f3a4b..."
@@ -707,13 +701,13 @@
 
           <Button
             type="button"
-            class="w-full gap-2.5 font-semibold shadow-sm bg-[#1877F2] hover:bg-[#166FE5] text-white"
+            class="w-full gap-2.5 font-medium shadow-sm bg-[#1877F2] hover:bg-[#166FE5] text-white"
             onclick={startOneClickMetaOAuth}
           >
             <svg class="size-4 fill-current" viewBox="0 0 24 24">
               <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
             </svg>
-            Continue with Facebook
+            Continue with Meta
             <ArrowRight class="size-4 ml-auto" />
           </Button>
         </div>
@@ -733,40 +727,37 @@
       {/if}
 
       <!-- ═══════════════════════════════════════════════════════════════ -->
-      <!-- 1-CLICK EBAY OAUTH FLOW (ZERO-MANUAL-TOKEN CONNECT)             -->
+      <!-- EBAY OAUTH FLOW -->
       <!-- ═══════════════════════════════════════════════════════════════ -->
       {#if connector.name === "ebay"}
-        <div class="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-4">
+        <div class="rounded-xl border bg-card p-4 space-y-4 shadow-sm">
           <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <Sparkles class="size-4 text-primary" />
-              <span class="text-sm font-bold text-foreground">1-Click eBay Store Connect</span>
-            </div>
-            <Badge variant="success">Recommended</Badge>
+            <span class="text-sm font-semibold text-foreground">eBay Seller Account Authorization</span>
+            <Badge variant="outline" class="text-[11px] font-medium">OAuth 2.0</Badge>
           </div>
 
           <p class="text-xs text-muted-foreground leading-relaxed">
-            Click below to sign in to your eBay Seller account and approve OpenCommerce. Your inventory, business policies (fulfillment, return, payment), and orders will be linked automatically.
+            Connect your eBay account to manage listings, sync inventory levels, and automatically import merchant shipping, payment, and return policies.
           </p>
 
           {#if !connector.hasServerOAuth && !credValues["client_id"]}
-            <div class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs space-y-2">
-              <div class="flex items-center gap-1.5 font-medium text-amber-900 dark:text-amber-200">
-                <AlertCircle class="size-3.5" />
-                <span>Self-Hosted Server Notice</span>
+            <div class="rounded-lg border bg-muted/40 p-3.5 text-xs space-y-2.5">
+              <div class="flex items-center gap-1.5 font-medium text-foreground">
+                <AlertCircle class="size-3.5 text-muted-foreground" />
+                <span>eBay Developer Credentials</span>
               </div>
               <p class="text-[11px] text-muted-foreground leading-relaxed">
-                Set <code>EBAY_CLIENT_ID</code>, <code>EBAY_CLIENT_SECRET</code>, and <code>EBAY_RU_NAME</code> in your server's <code>.env</code> file for instant 1-click connect, or enter them below:
+                Provide your eBay App credentials below, or configure <code>EBAY_CLIENT_ID</code>, <code>EBAY_CLIENT_SECRET</code>, and <code>EBAY_RU_NAME</code> in your environment.
               </p>
               <div class="grid gap-2.5 sm:grid-cols-2 pt-1">
                 <Field
-                  label="App ID (Client ID)"
+                  label="Client ID (App ID)"
                   name="quick_ebay_client_id"
                   placeholder="e.g. MyShop-App-PRD-..."
                   bind:value={credValues["client_id"]}
                 />
                 <Field
-                  label="Cert ID (Client Secret)"
+                  label="Client Secret (Cert ID)"
                   name="quick_ebay_client_secret"
                   type="password"
                   placeholder="e.g. PRD-123456789abc..."
@@ -778,7 +769,7 @@
                     name="quick_ebay_ru_name"
                     placeholder="e.g. YourName-YourApp-PRD-12345..."
                     bind:value={credValues["ru_name"]}
-                    help="From developer.ebay.com > User Tokens > Your Application Redirect URL"
+                    help="From developer.ebay.com > User Tokens > Application Redirect URL"
                   />
                 </div>
               </div>
@@ -801,11 +792,11 @@
 
           <Button
             type="button"
-            class="w-full gap-2.5 font-semibold shadow-sm bg-[#e53238] hover:bg-[#c92429] text-white"
+            class="w-full gap-2.5 font-medium shadow-sm bg-[#0064D2] hover:bg-[#0053b3] text-white"
             onclick={startOneClickEbayOAuth}
           >
             <ExternalLink class="size-4" />
-            Connect with eBay
+            Authorize on eBay
             <ArrowRight class="size-4 ml-auto" />
           </Button>
         </div>

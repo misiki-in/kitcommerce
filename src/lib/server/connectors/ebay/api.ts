@@ -122,6 +122,12 @@ export async function discoverAllEbayResources(ctx: ConnectorContext): Promise<E
     const validPolicy = list.find((p: any) => Array.isArray(p.shippingOptions) && p.shippingOptions.length > 0);
     if (!validPolicy) {
       try {
+        const currency = mId === "EBAY_IN" ? "INR" : mId === "EBAY_GB" ? "GBP" : mId === "EBAY_DE" ? "EUR" : "USD";
+        const shippingServiceCode =
+          mId === "EBAY_IN" ? "IN_StandardDelivery" : mId === "EBAY_GB" ? "UK_RoyalMailTracked48" : "USPSPriority";
+        const shippingCarrierCode =
+          mId === "EBAY_IN" ? "India Post" : mId === "EBAY_GB" ? "Royal Mail" : "USPS";
+
         const defaultShippingPolicy = await call(ctx, "/sell/account/v1/fulfillment_policy", {
           method: "POST",
           body: JSON.stringify({
@@ -136,9 +142,9 @@ export async function discoverAllEbayResources(ctx: ConnectorContext): Promise<E
                 costType: "FLAT_RATE",
                 shippingServices: [
                   {
-                    shippingServiceCode: mId === "EBAY_IN" ? "IN_StandardDelivery" : mId === "EBAY_GB" ? "UK_RoyalMailTracked48" : "USPSPriority",
-                    shippingCarrierCode: mId === "EBAY_IN" ? "India Post" : mId === "EBAY_GB" ? "Royal Mail" : "USPS",
-                    shippingCost: { value: "0.00", currency: ctx.seller?.currency || (mId === "EBAY_IN" ? "INR" : mId === "EBAY_GB" ? "GBP" : "USD") },
+                    shippingServiceCode,
+                    shippingCarrierCode,
+                    shippingCost: { value: "0.00", currency },
                     freeShipping: true,
                     buyerResponsibleForShipping: false,
                     sortOrder: 1,
@@ -203,29 +209,37 @@ export async function discoverAllEbayResources(ctx: ConnectorContext): Promise<E
       status: loc.merchantLocationStatus,
     }));
 
-    // If no merchant location exists yet, auto-create a default location
+    // If no merchant location exists yet, auto-create a default location using Account Settings
     if (locations.length === 0) {
       const defaultKey = "DEFAULT_WAREHOUSE";
       try {
-        await call(ctx, `/sell/inventory/v1/location/${defaultKey}`, {
-          method: "POST",
-          body: JSON.stringify({
-            location: {
-              address: {
-                addressLine1: ctx.seller?.address?.line1 || "123 Commerce Way",
-                addressLine2: ctx.seller?.address?.line2 || undefined,
-                city: ctx.seller?.address?.city || "San Jose",
-                stateOrProvince: ctx.seller?.address?.state || "CA",
-                postalCode: ctx.seller?.address?.postalCode || "95125",
-                country: ctx.seller?.address?.country || "US",
+        const addr = ctx.seller?.address;
+        const country = (addr?.country || (mId === "EBAY_IN" ? "IN" : mId === "EBAY_GB" ? "GB" : mId === "EBAY_DE" ? "DE" : "US")).toUpperCase();
+        const postalCode = addr?.postalCode || "";
+        const city = addr?.city || "";
+        const stateOrProvince = addr?.state || "";
+        const addressLine1 = addr?.line1 || "";
+
+        if (addressLine1 && city && postalCode && country) {
+          await call(ctx, `/sell/inventory/v1/location/${defaultKey}`, {
+            method: "POST",
+            body: JSON.stringify({
+              location: {
+                address: {
+                  addressLine1,
+                  city,
+                  stateOrProvince: stateOrProvince || city,
+                  postalCode,
+                  country,
+                },
               },
-            },
-            locationTypes: ["WAREHOUSE"],
-            merchantLocationStatus: "ENABLED",
-            name: ctx.seller?.storeName ? `${ctx.seller.storeName} Warehouse` : "Main Warehouse",
-          }),
-        });
-        locations.push({ key: defaultKey, name: "Main Warehouse", status: "ENABLED" });
+              locationTypes: ["WAREHOUSE"],
+              merchantLocationStatus: "ENABLED",
+              name: ctx.seller?.storeName ? `${ctx.seller.storeName} Warehouse` : "Main Warehouse",
+            }),
+          });
+          locations.push({ key: defaultKey, name: ctx.seller?.storeName ? `${ctx.seller.storeName} Warehouse` : "Main Warehouse", status: "ENABLED" });
+        }
       } catch (locErr: any) {
         errors.push(`Default location registration failed: ${locErr.message}`);
       }
@@ -248,35 +262,49 @@ export async function discoverAllEbayResources(ctx: ConnectorContext): Promise<E
 }
 
 /**
- * Ensures an active merchant location key is available on eBay.
- * Creates DEFAULT_WAREHOUSE if no location is present.
+ * Ensures that an inventory location exists on eBay using store demographic info from Account Settings.
  */
-export async function ensureEbayLocation(ctx: ConnectorContext, preferredKey?: string): Promise<string> {
+export async function ensureEbayLocation(
+  ctx: ConnectorContext,
+  preferredKey?: string,
+): Promise<string> {
   const key = preferredKey || ctx.config.ebay_merchant_location_key || "DEFAULT_WAREHOUSE";
+  const mId = marketplaceId(ctx);
 
-  // Check if location exists
+  // Take all demographic information from Account Settings (ctx.seller.address)
+  const addr = ctx.seller?.address;
+  const country = (addr?.country || (mId === "EBAY_IN" ? "IN" : mId === "EBAY_GB" ? "GB" : mId === "EBAY_DE" ? "DE" : "US")).toUpperCase();
+  const postalCode = addr?.postalCode?.trim() || "";
+  const city = addr?.city?.trim() || "";
+  const stateOrProvince = addr?.state?.trim() || "";
+  const addressLine1 = addr?.line1?.trim() || "";
+
+  if (!postalCode || !city || !addressLine1) {
+    console.warn(`[eBay ensureEbayLocation] Incomplete address in Account Settings: postalCode='${postalCode}', city='${city}', line1='${addressLine1}'`);
+  }
+
+  // Check if location exists and has valid postalCode
   try {
     const existing = await call(ctx, `/sell/inventory/v1/location/${encodeURIComponent(key)}`);
-    if (existing && existing.merchantLocationStatus === "ENABLED") {
+    if (existing && existing.merchantLocationStatus === "ENABLED" && existing.location?.address?.postalCode) {
       return key;
     }
   } catch {
-    // Location does not exist, create it
+    // Location does not exist or fetch failed, create/update it
   }
 
-  // Create/register location
+  // Create or update location with demographic data from Account Settings
   try {
     await call(ctx, `/sell/inventory/v1/location/${encodeURIComponent(key)}`, {
       method: "POST",
       body: JSON.stringify({
         location: {
           address: {
-            addressLine1: ctx.seller?.address?.line1 || "123 Commerce Way",
-            addressLine2: ctx.seller?.address?.line2 || undefined,
-            city: ctx.seller?.address?.city || "San Jose",
-            stateOrProvince: ctx.seller?.address?.state || "CA",
-            postalCode: ctx.seller?.address?.postalCode || "95125",
-            country: ctx.seller?.address?.country || "US",
+            addressLine1: addressLine1 || "Store Location",
+            city: city || "City",
+            stateOrProvince: stateOrProvince || city || "State",
+            postalCode: postalCode || "",
+            country: country || "US",
           },
         },
         locationTypes: ["WAREHOUSE"],
@@ -325,11 +353,11 @@ export async function ensureValidFulfillmentPolicy(
 
   // 3. Auto-create a standard valid fulfillment policy with domestic tracked shipping
   try {
+    const currency = mId === "EBAY_IN" ? "INR" : mId === "EBAY_GB" ? "GBP" : mId === "EBAY_DE" ? "EUR" : "USD";
     const shippingServiceCode =
       mId === "EBAY_IN" ? "IN_StandardDelivery" : mId === "EBAY_GB" ? "UK_RoyalMailTracked48" : "USPSPriority";
     const shippingCarrierCode =
       mId === "EBAY_IN" ? "India Post" : mId === "EBAY_GB" ? "Royal Mail" : "USPS";
-    const currency = ctx.seller?.currency || (mId === "EBAY_IN" ? "INR" : mId === "EBAY_GB" ? "GBP" : "USD");
 
     const created = await call(ctx, "/sell/account/v1/fulfillment_policy", {
       method: "POST",
@@ -370,5 +398,109 @@ export async function ensureValidFulfillmentPolicy(
   return candidateId || "";
 }
 
+/**
+ * Ensures a valid return policy exists or creates a default 30-day return policy.
+ */
+export async function ensureValidReturnPolicy(
+  ctx: ConnectorContext,
+  preferredPolicyId?: string,
+): Promise<string> {
+  const mId = marketplaceId(ctx);
+  const candidateId = preferredPolicyId || ctx.config.ebay_return_policy_id || ctx.config.default_return_policy_id;
 
+  if (candidateId) {
+    try {
+      const pol = await call(ctx, `/sell/account/v1/return_policy/${candidateId}`);
+      if (pol?.returnPolicyId) return candidateId;
+    } catch {}
+  }
 
+  try {
+    const res = await call(ctx, `/sell/account/v1/return_policy?marketplace_id=${mId}`);
+    const list: any[] = res?.returnPolicies ?? [];
+    if (list[0]?.returnPolicyId) {
+      const validId = String(list[0].returnPolicyId);
+      ctx.config.ebay_return_policy_id = validId;
+      return validId;
+    }
+  } catch {}
+
+  // Auto-create standard 30-day return policy
+  try {
+    const created = await call(ctx, "/sell/account/v1/return_policy", {
+      method: "POST",
+      body: JSON.stringify({
+        name: `Standard Returns (${mId}) - Auto`,
+        description: "30-day buyer pays return shipping policy",
+        marketplaceId: mId,
+        categoryTypes: [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES", default: true }],
+        returnsAccepted: true,
+        returnPeriod: { value: 30, unit: "DAY" },
+        refundMethod: "MONEY_BACK",
+        returnShippingCostPayer: "BUYER",
+      }),
+    });
+
+    if (created?.returnPolicyId) {
+      const createdId = String(created.returnPolicyId);
+      ctx.config.ebay_return_policy_id = createdId;
+      return createdId;
+    }
+  } catch (err: any) {
+    console.warn(`[eBay ensureValidReturnPolicy] Warning: ${err.message}`);
+  }
+
+  return candidateId || "";
+}
+
+/**
+ * Ensures a valid payment policy exists or creates a default standard payment policy.
+ */
+export async function ensureValidPaymentPolicy(
+  ctx: ConnectorContext,
+  preferredPolicyId?: string,
+): Promise<string> {
+  const mId = marketplaceId(ctx);
+  const candidateId = preferredPolicyId || ctx.config.ebay_payment_policy_id || ctx.config.default_payment_policy_id;
+
+  if (candidateId) {
+    try {
+      const pol = await call(ctx, `/sell/account/v1/payment_policy/${candidateId}`);
+      if (pol?.paymentPolicyId) return candidateId;
+    } catch {}
+  }
+
+  try {
+    const res = await call(ctx, `/sell/account/v1/payment_policy?marketplace_id=${mId}`);
+    const list: any[] = res?.paymentPolicies ?? [];
+    if (list[0]?.paymentPolicyId) {
+      const validId = String(list[0].paymentPolicyId);
+      ctx.config.ebay_payment_policy_id = validId;
+      return validId;
+    }
+  } catch {}
+
+  // Auto-create standard payment policy (eBay Managed Payments)
+  try {
+    const created = await call(ctx, "/sell/account/v1/payment_policy", {
+      method: "POST",
+      body: JSON.stringify({
+        name: `Standard Managed Payments (${mId}) - Auto`,
+        description: "Standard eBay managed payments policy with immediate payment",
+        marketplaceId: mId,
+        categoryTypes: [{ name: "ALL_EXCLUDING_MOTORS_VEHICLES", default: true }],
+        immediatePay: false,
+      }),
+    });
+
+    if (created?.paymentPolicyId) {
+      const createdId = String(created.paymentPolicyId);
+      ctx.config.ebay_payment_policy_id = createdId;
+      return createdId;
+    }
+  } catch (err: any) {
+    console.warn(`[eBay ensureValidPaymentPolicy] Warning: ${err.message}`);
+  }
+
+  return candidateId || "";
+}

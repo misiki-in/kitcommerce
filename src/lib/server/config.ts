@@ -37,13 +37,31 @@ function loadOrCreateKey(): Uint8Array {
   return key;
 }
 
+function resolveDbPath(): string {
+  const urlOrPath = process.env.DATABASE_URL || process.env.OC_DB_URL || process.env.OC_DB_PATH;
+  if (!urlOrPath) {
+    return join(dataDir, "opencommerce.db");
+  }
+  // If provided as sqlite URL e.g. "sqlite://path/to/db" or "file:path/to/db"
+  if (urlOrPath.startsWith("sqlite://")) {
+    return urlOrPath.slice("sqlite://".length);
+  }
+  if (urlOrPath.startsWith("file://")) {
+    return urlOrPath.slice("file://".length);
+  }
+  if (urlOrPath.startsWith("file:")) {
+    return urlOrPath.slice("file:".length);
+  }
+  return urlOrPath;
+}
+
 export const config = {
   env: process.env.NODE_ENV ?? "development",
   port: Number(process.env.PORT ?? 3000),
   host: process.env.HOST ?? "0.0.0.0",
 
   dataDir,
-  dbPath: process.env.OC_DB_PATH ?? join(dataDir, "opencommerce.db"),
+  dbPath: resolveDbPath(),
   uploadsDir: join(dataDir, "uploads"),
 
   secretKey: loadOrCreateKey(),

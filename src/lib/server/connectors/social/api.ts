@@ -78,9 +78,27 @@ export const metaItem = (
       : method === "UPDATE"
         ? ""
         : undefined;
+  const itemGroupId =
+    a?.style_code ||
+    a?.["Style Code"] ||
+    a?.["styleCode"] ||
+    a?.["Style code"] ||
+    p.sku;
+
+  // Build PDP product URL: prefix + slug (falling back to landing_url or empty)
+  let productLink = String(a?.landing_url ?? a?.url ?? "").trim();
+  const pdpPrefix = String(ctx.config.pdp_url_prefix || a?.pdp_url_prefix || "").trim();
+  const slug = String(a?.slug || a?.handle || p.sku || "").trim();
+
+  if (pdpPrefix) {
+    const cleanPrefix = pdpPrefix.endsWith("/") ? pdpPrefix : `${pdpPrefix}/`;
+    const cleanSlug = slug.startsWith("/") ? slug.slice(1) : slug;
+    productLink = `${cleanPrefix}${cleanSlug}`;
+  }
+
   return {
     id: v.sku,
-    item_group_id: p.sku,
+    item_group_id: itemGroupId,
     title: p.title,
     description: p.description,
     brand: p.brand,
@@ -89,7 +107,7 @@ export const metaItem = (
     quantity_to_sell_on_facebook: v.available,
     price: `${money(Math.max(v.priceCents, v.mrpCents))} ${currency}`,
     sale_price: salePrice,
-    link: a.landing_url ?? "",
+    link: productLink,
     image_link: p.images[0]?.url ?? "",
     additional_image_link: p.images.slice(1, 10).map((im) => im.url),
     ...metaOptions(ctx, v),

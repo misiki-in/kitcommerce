@@ -244,6 +244,57 @@ export async function deleteProductFromChannel(
 }
 
 /**
+ * Dynamically normalizes discovered channel resources into standard channel config keys.
+ */
+export function normalizeDiscoveredConfig(connectorName: string, discovered: Record<string, any>): Record<string, any> {
+  const norm: Record<string, any> = {};
+
+  if (discovered.shopId || discovered.shop_id) {
+    norm.shop_id = String(discovered.shopId || discovered.shop_id);
+  }
+  if (discovered.shopName || discovered.shop_name) {
+    norm.shop_name = String(discovered.shopName || discovered.shop_name);
+  }
+  if (discovered.shops) norm.discovered_shops = discovered.shops;
+
+  if (discovered.catalogId || discovered.catalog_id) {
+    norm.catalog_id = String(discovered.catalogId || discovered.catalog_id);
+  }
+  if (discovered.catalogName || discovered.catalog_name) {
+    norm.catalog_name = String(discovered.catalogName || discovered.catalog_name);
+  }
+  if (discovered.catalogs) norm.discovered_catalogs = discovered.catalogs;
+  if (discovered.businesses) norm.discovered_businesses = discovered.businesses;
+
+  if (discovered.shippingProfiles?.[0]?.id) {
+    norm.default_shipping_profile_id = discovered.shippingProfiles[0].id;
+  }
+  if (discovered.returnPolicies?.[0]?.id) {
+    norm.default_return_policy_id = discovered.returnPolicies[0].id;
+  }
+
+  if (discovered.defaultFulfillmentPolicyId) {
+    norm.ebay_fulfillment_policy_id = discovered.defaultFulfillmentPolicyId;
+  }
+  if (discovered.defaultReturnPolicyId) {
+    norm.ebay_return_policy_id = discovered.defaultReturnPolicyId;
+  }
+  if (discovered.defaultPaymentPolicyId) {
+    norm.ebay_payment_policy_id = discovered.defaultPaymentPolicyId;
+  }
+  if (discovered.defaultMerchantLocationKey) {
+    norm.ebay_merchant_location_key = discovered.defaultMerchantLocationKey;
+  }
+
+  if (discovered.fulfillmentPolicies) norm.discovered_fulfillment_policies = discovered.fulfillmentPolicies;
+  if (discovered.returnPolicies) norm.discovered_return_policies = discovered.returnPolicies;
+  if (discovered.paymentPolicies) norm.discovered_payment_policies = discovered.paymentPolicies;
+  if (discovered.locations) norm.discovered_locations = discovered.locations;
+
+  return norm;
+}
+
+/**
  * Dynamically discovers channel configurations & profiles (shipping, shops, return policies)
  * without hardcoded marketplace logic.
  */
@@ -251,23 +302,25 @@ export async function discoverChannelResources(
   repo: Repo,
   channelId: string,
   configOverrides: Record<string, any> = {},
-): Promise<{ success: boolean; data?: Record<string, any>; error?: string }> {
+): Promise<{ success: boolean; data?: Record<string, any>; normalized?: Record<string, any>; error?: string }> {
   const chInfo = await buildChannelContext(repo, channelId);
   if (!chInfo) {
     return { success: false, error: `Channel #${channelId} not found.` };
   }
 
-  const { connector, ctx } = chInfo;
+  const { connector, ctx, channel } = chInfo;
   Object.assign(ctx.config, configOverrides);
 
   if (typeof connector.discover !== "function") {
-    return { success: true, data: {} };
+    return { success: true, data: {}, normalized: {} };
   }
 
   try {
     const data = await connector.discover(ctx);
-    return { success: true, data };
+    const normalized = normalizeDiscoveredConfig(channel.connector, data);
+    return { success: true, data, normalized };
   } catch (err: any) {
     return { success: false, error: err.message || String(err) };
   }
 }
+

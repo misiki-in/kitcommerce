@@ -22,6 +22,7 @@
   import Database from "@lucide/svelte/icons/database";
   import CheckCircle2 from "@lucide/svelte/icons/check-circle-2";
   import Layers from "@lucide/svelte/icons/layers";
+  import Link from "@lucide/svelte/icons/link";
   import type { PageServerData } from "./$types";
 
   let { data }: { data: PageServerData } = $props();
@@ -156,6 +157,9 @@
     (metaChannel ? data.channelLiveOptions?.[metaChannel.id]?.catalogId : "") ||
     metaChannel?.config?.catalog_id ||
     ""
+  );
+  let metaPdpUrlPrefix = $state<string>(
+    metaChannel?.config?.pdp_url_prefix || ""
   );
   let isFetchingMeta = $state(false);
   let metaFetchError = $state("");
@@ -440,6 +444,71 @@
     }
   }
 
+  async function fetchEbaySettings() {
+    if (!ebayChannel) return;
+    isFetchingEbay = true;
+    ebayFetchError = "";
+    try {
+      const form = new FormData();
+      form.append("channel_id", ebayChannel.id);
+
+      const res = await fetch("?/fetchChannelSettings", {
+        method: "POST",
+        body: form,
+      });
+
+      const raw = await res.text();
+      let resData: any = null;
+
+      try {
+        const result = deserialize(raw);
+        if (result.type === "success" && (result as any).data) {
+          resData = (result as any).data;
+        } else if (result.type === "failure" && (result as any).data) {
+          throw new Error((result as any).data?.error || "Failed to fetch eBay settings.");
+        }
+      } catch (err: any) {
+        if (err.message && !err.message.includes("deserialize")) throw err;
+        try {
+          resData = JSON.parse(raw);
+          if (resData.data) resData = resData.data;
+        } catch {}
+      }
+
+      if (!resData) {
+        throw new Error("Could not parse eBay settings response.");
+      }
+
+      if (resData.error) {
+        throw new Error(resData.error);
+      }
+
+      if (resData.fulfillmentPolicies?.length) {
+        fetchedEbayFulfillment = resData.fulfillmentPolicies;
+        if (!ebayFulfillmentPolicyId) ebayFulfillmentPolicyId = String(resData.fulfillmentPolicies[0].id);
+      }
+
+      if (resData.returnPolicies?.length) {
+        fetchedEbayReturns = resData.returnPolicies;
+        if (!ebayReturnPolicyId) ebayReturnPolicyId = String(resData.returnPolicies[0].id);
+      }
+
+      if (resData.paymentPolicies?.length) {
+        fetchedEbayPayments = resData.paymentPolicies;
+        if (!ebayPaymentPolicyId) ebayPaymentPolicyId = String(resData.paymentPolicies[0].id);
+      }
+
+      if (resData.locations?.length) {
+        fetchedEbayLocations = resData.locations;
+        if (!ebayMerchantLocationKey) ebayMerchantLocationKey = String(resData.locations[0].key);
+      }
+    } catch (err: any) {
+      ebayFetchError = err.message || "Failed to connect to eBay API.";
+    } finally {
+      isFetchingEbay = false;
+    }
+  }
+
   function handleStep3Next() {
     if (activeSubStepIndex < selectedConfiguredChannels.length) {
       activeSubStepIndex++;
@@ -665,6 +734,9 @@
           <input type="hidden" name="meta_catalog_id" value={metaCatalogId} />
           <input type="hidden" name={`cfg_${metaChannel.id}_catalog_id`} value={metaCatalogId} />
           <input type="hidden" name={`cfg_meta_catalog_id`} value={metaCatalogId} />
+          <input type="hidden" name="meta_pdp_url_prefix" value={metaPdpUrlPrefix} />
+          <input type="hidden" name={`cfg_${metaChannel.id}_pdp_url_prefix`} value={metaPdpUrlPrefix} />
+          <input type="hidden" name={`cfg_meta_pdp_url_prefix`} value={metaPdpUrlPrefix} />
         {/if}
 
         <!-- ═════════════════════════════════════════════════════════════ -->
@@ -1064,15 +1136,42 @@
                   </div>
                 </CardHeader>
                 <CardContent class="space-y-4">
+                  <div class="flex items-center justify-between border-b pb-3 pt-1">
+                    <span class="text-xs font-semibold text-foreground">Business Policies & Shipping</span>
+                    <button
+                      type="button"
+                      disabled={isFetchingEbay}
+                      onclick={fetchEbaySettings}
+                      class="inline-flex items-center gap-1.5 text-xs text-primary hover:underline font-medium disabled:opacity-50"
+                    >
+                      {#if isFetchingEbay}
+                        <LoaderCircle class="size-3.5 animate-spin" />
+                        Fetching...
+                      {:else}
+                        <RefreshCw class="size-3.5" />
+                        Sync / Discover Policies
+                      {/if}
+                    </button>
+                  </div>
+
+                  {#if ebayFetchError}
+                    <Alert variant="destructive" class="text-xs py-2">
+                      <AlertCircle class="size-3.5" />
+                      <AlertDescription>{ebayFetchError}</AlertDescription>
+                    </Alert>
+                  {/if}
+
                   <div class="grid gap-4 sm:grid-cols-2">
                     <!-- FULFILLMENT POLICY -->
                     <div class="space-y-1.5">
-                      <Label for="ebay_fulfillment_policy_id" class="font-medium">
-                        Fulfillment (Shipping) Policy
+                      <div class="flex items-center justify-between">
+                        <Label for="ebay_fulfillment_policy_id" class="font-medium">
+                          Fulfillment (Shipping) Policy
+                        </Label>
                         {#if fetchedEbayFulfillment.length > 0}
-                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedEbayFulfillment.length} available</span>
+                          <span class="text-[10px] font-normal text-success">✓ {fetchedEbayFulfillment.length} available</span>
                         {/if}
-                      </Label>
+                      </div>
                       {#if fetchedEbayFulfillment.length > 0}
                         <select
                           id="ebay_fulfillment_policy_id"
@@ -1086,24 +1185,28 @@
                           {/each}
                         </select>
                       {:else}
-                        <input
-                          id="ebay_fulfillment_policy_id"
-                          type="text"
-                          bind:value={ebayFulfillmentPolicyId}
-                          placeholder="e.g. 192837465012"
-                          class={selectClass}
-                        />
+                        <div class="space-y-1">
+                          <input
+                            id="ebay_fulfillment_policy_id"
+                            type="text"
+                            bind:value={ebayFulfillmentPolicyId}
+                            placeholder="Auto-created on sync (or enter policy ID)"
+                            class={selectClass}
+                          />
+                        </div>
                       {/if}
                     </div>
 
                     <!-- RETURN POLICY -->
                     <div class="space-y-1.5">
-                      <Label for="ebay_return_policy_id" class="font-medium">
-                        Return Policy
+                      <div class="flex items-center justify-between">
+                        <Label for="ebay_return_policy_id" class="font-medium">
+                          Return Policy
+                        </Label>
                         {#if fetchedEbayReturns.length > 0}
-                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedEbayReturns.length} available</span>
+                          <span class="text-[10px] font-normal text-success">✓ {fetchedEbayReturns.length} available</span>
                         {/if}
-                      </Label>
+                      </div>
                       {#if fetchedEbayReturns.length > 0}
                         <select
                           id="ebay_return_policy_id"
@@ -1121,7 +1224,7 @@
                           id="ebay_return_policy_id"
                           type="text"
                           bind:value={ebayReturnPolicyId}
-                          placeholder="e.g. 293847561023"
+                          placeholder="Auto-created on sync (or enter policy ID)"
                           class={selectClass}
                         />
                       {/if}
@@ -1131,12 +1234,14 @@
                   <div class="grid gap-4 sm:grid-cols-2">
                     <!-- PAYMENT POLICY -->
                     <div class="space-y-1.5">
-                      <Label for="ebay_payment_policy_id" class="font-medium">
-                        Payment Policy
+                      <div class="flex items-center justify-between">
+                        <Label for="ebay_payment_policy_id" class="font-medium">
+                          Payment Policy
+                        </Label>
                         {#if fetchedEbayPayments.length > 0}
-                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedEbayPayments.length} available</span>
+                          <span class="text-[10px] font-normal text-success">✓ {fetchedEbayPayments.length} available</span>
                         {/if}
-                      </Label>
+                      </div>
                       {#if fetchedEbayPayments.length > 0}
                         <select
                           id="ebay_payment_policy_id"
@@ -1154,7 +1259,7 @@
                           id="ebay_payment_policy_id"
                           type="text"
                           bind:value={ebayPaymentPolicyId}
-                          placeholder="e.g. 384756192034"
+                          placeholder="Auto-created on sync (or enter policy ID)"
                           class={selectClass}
                         />
                       {/if}
@@ -1162,12 +1267,14 @@
 
                     <!-- MERCHANT LOCATION KEY -->
                     <div class="space-y-1.5">
-                      <Label for="ebay_merchant_location_key" class="font-medium">
-                        Inventory Location Key
+                      <div class="flex items-center justify-between">
+                        <Label for="ebay_merchant_location_key" class="font-medium">
+                          Inventory Location Key
+                        </Label>
                         {#if fetchedEbayLocations.length > 0}
-                          <span class="ml-1 text-[10px] font-normal text-success">✓ {fetchedEbayLocations.length} available</span>
+                          <span class="text-[10px] font-normal text-success">✓ {fetchedEbayLocations.length} available</span>
                         {/if}
-                      </Label>
+                      </div>
                       {#if fetchedEbayLocations.length > 0}
                         <select
                           id="ebay_merchant_location_key"
@@ -1185,7 +1292,7 @@
                           id="ebay_merchant_location_key"
                           type="text"
                           bind:value={ebayMerchantLocationKey}
-                          placeholder="e.g. DEFAULT_WAREHOUSE"
+                          placeholder="DEFAULT_WAREHOUSE (auto-created)"
                           class={selectClass}
                         />
                       {/if}
@@ -1380,6 +1487,36 @@
                         class={selectClass}
                       />
                     </div>
+
+                    <!-- PDP PAGE URL PREFIX -->
+                    <div class="space-y-2 rounded-xl border bg-muted/20 p-4 pt-3.5">
+                      <div class="flex items-center justify-between">
+                        <Label for="meta_pdp_url_prefix" class="text-sm font-semibold flex items-center gap-1.5">
+                          <Link class="size-4 text-primary" />
+                          Product Page (PDP) URL Prefix
+                        </Label>
+                        <span class="text-[11px] text-muted-foreground">Attached to product slug from sheet</span>
+                      </div>
+                      <p class="text-xs text-muted-foreground">
+                        Enter your website's store domain or product route prefix (e.g. <code>https://yourstore.com/products/</code>). 
+                        The product slug from each row in the sheet will be automatically appended to form Meta's product landing link.
+                      </p>
+                      <input
+                        id="meta_pdp_url_prefix"
+                        type="url"
+                        bind:value={metaPdpUrlPrefix}
+                        placeholder="https://yourstore.com/products/"
+                        class={selectClass}
+                      />
+                      {#if metaPdpUrlPrefix}
+                        <div class="flex items-center gap-1.5 text-[11px] text-muted-foreground bg-background/80 rounded-md border px-2.5 py-1.5">
+                          <span class="font-medium text-foreground">Link Preview:</span>
+                          <span class="font-mono text-primary truncate">
+                            {metaPdpUrlPrefix.endsWith('/') ? metaPdpUrlPrefix : `${metaPdpUrlPrefix}/`}&#123;slug&#125;
+                          </span>
+                        </div>
+                      {/if}
+                    </div>
                   </div>
 
                   {#if metaCatalogId}
@@ -1541,6 +1678,12 @@
                       <span class="text-muted-foreground">Meta Commerce Catalog:</span>
                       <span class="font-mono font-medium">{selectedCatObj?.name || "Catalog"} (#{metaCatalogId || "Default"})</span>
                     </div>
+                    {#if metaPdpUrlPrefix}
+                      <div class="flex justify-between border-t pt-2">
+                        <span class="text-muted-foreground">Meta PDP URL Prefix:</span>
+                        <span class="font-mono text-[11px] truncate max-w-[240px]" title={metaPdpUrlPrefix}>{metaPdpUrlPrefix}</span>
+                      </div>
+                    {/if}
                   {/if}
                 </div>
               </CardContent>

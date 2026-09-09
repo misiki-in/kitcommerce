@@ -151,6 +151,15 @@ export const actions: Actions = {
       catalogName: data.catalogName || "",
       catalogs: data.catalogs || [],
       businesses: data.businesses || [],
+      // eBay business policies & inventory locations
+      fulfillmentPolicies: data.fulfillmentPolicies || [],
+      returnPolicies: data.returnPolicies || [],
+      paymentPolicies: data.paymentPolicies || [],
+      locations: data.locations || [],
+      defaultFulfillmentPolicyId: data.defaultFulfillmentPolicyId || "",
+      defaultReturnPolicyId: data.defaultReturnPolicyId || "",
+      defaultPaymentPolicyId: data.defaultPaymentPolicyId || "",
+      defaultMerchantLocationKey: data.defaultMerchantLocationKey || "",
       discoveryErrors: data.errors ?? [],
     };
   },
@@ -235,6 +244,10 @@ export const actions: Actions = {
         if (metaCatalog) {
           dynamicConfigUpdates.catalog_id = String(metaCatalog).trim();
         }
+        const pdpUrlPrefix = form.get("meta_pdp_url_prefix") || form.get(`cfg_${channel.id}_pdp_url_prefix`) || form.get("pdp_url_prefix");
+        if (pdpUrlPrefix) {
+          dynamicConfigUpdates.pdp_url_prefix = String(pdpUrlPrefix).trim();
+        }
       }
 
       if (Object.keys(dynamicConfigUpdates).length > 0) {
@@ -249,6 +262,10 @@ export const actions: Actions = {
 
     // Extract channel-specific attribute overrides configured during import
     const channelLevelAttributes: Record<string, any> = {};
+    const metaPdpUrlPrefix = form.get("meta_pdp_url_prefix") || form.get("pdp_url_prefix");
+    if (metaPdpUrlPrefix) {
+      channelLevelAttributes.pdp_url_prefix = String(metaPdpUrlPrefix).trim();
+    }
     const whoMade = form.get("etsy_who_made");
     if (whoMade) channelLevelAttributes.who_made = String(whoMade).trim();
     const whenMade = form.get("etsy_when_made");

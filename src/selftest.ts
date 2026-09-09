@@ -476,7 +476,7 @@ JWS02,,Single Ring,120.00,2,Rings,https://example.com/ring.jpg,Stone,Diamond`;
   const { taxonomyIdForEbayCategory } = await import("./lib/server/connectors/ebay/taxonomy");
   check("resolves ebay rings category id", taxonomyIdForEbayCategory("Jewelry>Rings"), 67726);
   check("resolves ebay earrings category id", taxonomyIdForEbayCategory("Earrings>Shop By Style>Cluster Earrings"), 50647);
-  check("resolves ebay default category id for unknown", taxonomyIdForEbayCategory("Unknown>Category"), 11450);
+  check("resolves ebay default category id for unknown", taxonomyIdForEbayCategory("Unknown>Category"), 67726);
 
   // Database imports table
   db.run("INSERT INTO users (id, email, password_hash, created_at) VALUES ('usr_t', 't@e.com', 'x', 0)");

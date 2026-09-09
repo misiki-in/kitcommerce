@@ -275,150 +275,29 @@ export const actions: Actions = {
       }
     }
 
-    const prevConfig = channel.config ? JSON.parse(channel.config) : {};
+    const { discoverChannelResources } = await import("$server/connectors/service");
+    const result = await discoverChannelResources(repo, channel.id);
 
-    if (channel.connector === "etsy") {
-      const { discoverAllEtsyResources } = await import("$server/connectors/etsy");
-      const ctx = {
-        config: prevConfig,
-        credentials: {
-          keystring: creds.keystring || creds.api_key || "",
-          api_key: creds.keystring || creds.api_key || "",
-          shared_secret: creds.shared_secret || "",
-          refresh_token: creds.refresh_token || "",
-          access_token: creds.access_token || "",
-        },
-        seller: { storeName: store.name, currency: store.currency },
-        log: (msg: string) => console.log(`[Channel Refresh] ${msg}`),
-      };
-
-      try {
-        const discovery = await discoverAllEtsyResources(ctx as any);
-        const newShopId = discovery.shopId ? String(discovery.shopId) : prevConfig.shop_id;
-        const newShopName = discovery.shopName || prevConfig.shop_name || "";
-
-        const updatedConfig = {
-          ...prevConfig,
-          shop_id: newShopId,
-          shop_name: newShopName,
-          discovered_shops: discovery.shops,
-          default_shipping_profile_id: prevConfig.default_shipping_profile_id || discovery.shippingProfiles?.[0]?.id,
-          default_return_policy_id: prevConfig.default_return_policy_id || discovery.returnPolicies?.[0]?.id,
-        };
-
-        repo.updateChannel(channel.id, { config: updatedConfig });
-        repo.setChannelHealth(channel.id, "HEALTHY", "");
-
-        return {
-          refreshed: true,
-          shopId: newShopId,
-          shopName: newShopName,
-          shopsCount: discovery.shops?.length || 0,
-        };
-      } catch (err: any) {
-        repo.setChannelHealth(channel.id, "API_FAILURE", err.message);
-        return fail(400, { error: `Etsy API discovery error: ${err.message}` });
-      }
+    if (!result.success) {
+      repo.setChannelHealth(channel.id, "API_FAILURE", result.error || "Discovery failed");
+      return fail(400, { error: `${channel.connector} API discovery error: ${result.error}` });
     }
 
-    if (channel.connector === "meta" || channel.connector === "facebook" || channel.connector === "instagram") {
-      const { discoverAllMetaResources } = await import("$server/connectors/social");
-      const ctx = {
-        config: prevConfig,
-        credentials: {
-          app_id: creds.app_id || "",
-          app_secret: creds.app_secret || "",
-          catalog_id: creds.catalog_id || prevConfig.catalog_id || "",
-          access_token: creds.access_token || "",
-          business_id: creds.business_id || prevConfig.business_id || "",
-        },
-        seller: { storeName: store.name, currency: store.currency },
-        log: (msg: string) => console.log(`[Meta Refresh] ${msg}`),
-      };
-
-      try {
-        const discovery = await discoverAllMetaResources(ctx as any);
-        const newCatalogId = discovery.catalogId ? String(discovery.catalogId) : prevConfig.catalog_id;
-        const newCatalogName = discovery.catalogName || prevConfig.catalog_name || "";
-
-        const updatedConfig = {
-          ...prevConfig,
-          catalog_id: newCatalogId,
-          catalog_name: newCatalogName,
-          discovered_catalogs: discovery.catalogs,
-          discovered_businesses: discovery.businesses,
-        };
-
-        repo.updateChannel(channel.id, { config: updatedConfig });
-        repo.setChannelHealth(channel.id, "HEALTHY", newCatalogName ? `Catalog: ${newCatalogName}` : "");
-
-        return {
-          refreshed: true,
-          catalogId: newCatalogId,
-          catalogName: newCatalogName,
-          catalogsCount: discovery.catalogs?.length || 0,
-        };
-      } catch (err: any) {
-        repo.setChannelHealth(channel.id, "API_FAILURE", err.message);
-        return fail(400, { error: `Meta API discovery error: ${err.message}` });
-      }
+    if (result.normalized && Object.keys(result.normalized).length > 0) {
+      const prevConfig = channel.config ? JSON.parse(channel.config) : {};
+      const updatedConfig = { ...prevConfig, ...result.normalized };
+      repo.updateChannel(channel.id, { config: updatedConfig });
+      repo.setChannelHealth(channel.id, "HEALTHY", "");
     }
 
-    if (channel.connector === "ebay") {
-      const { discoverAllEbayResources } = await import("$server/connectors/ebay");
-      const ctx = {
-        config: prevConfig,
-        credentials: {
-          client_id: creds.client_id || "",
-          client_secret: creds.client_secret || "",
-          refresh_token: creds.refresh_token || "",
-        },
-        seller: {
-          storeName: store.name,
-          currency: store.currency,
-          address: {
-            line1: store.address_line1,
-            line2: store.address_line2,
-            city: store.city,
-            state: store.state,
-            postalCode: store.postal_code,
-            country: store.country,
-          },
-        },
-        log: (msg: string) => console.log(`[eBay Refresh] ${msg}`),
-      };
-
-      try {
-        const discovery = await discoverAllEbayResources(ctx as any);
-        const updatedConfig = {
-          ...prevConfig,
-          ebay_fulfillment_policy_id: prevConfig.ebay_fulfillment_policy_id || discovery.defaultFulfillmentPolicyId,
-          ebay_return_policy_id: prevConfig.ebay_return_policy_id || discovery.defaultReturnPolicyId,
-          ebay_payment_policy_id: prevConfig.ebay_payment_policy_id || discovery.defaultPaymentPolicyId,
-          ebay_merchant_location_key: prevConfig.ebay_merchant_location_key || discovery.defaultMerchantLocationKey,
-          discovered_fulfillment_policies: discovery.fulfillmentPolicies,
-          discovered_return_policies: discovery.returnPolicies,
-          discovered_payment_policies: discovery.paymentPolicies,
-          discovered_locations: discovery.locations,
-        };
-
-        repo.updateChannel(channel.id, { config: updatedConfig });
-        repo.setChannelHealth(channel.id, "HEALTHY", `Policies: ${discovery.fulfillmentPolicies.length} fulfill, ${discovery.returnPolicies.length} return`);
-
-        return {
-          refreshed: true,
-          fulfillmentPolicies: discovery.fulfillmentPolicies,
-          returnPolicies: discovery.returnPolicies,
-          paymentPolicies: discovery.paymentPolicies,
-          locations: discovery.locations,
-        };
-      } catch (err: any) {
-        repo.setChannelHealth(channel.id, "API_FAILURE", err.message);
-        return fail(400, { error: `eBay API discovery error: ${err.message}` });
-      }
-    }
-
-    return { refreshed: true };
+    return {
+      refreshed: true,
+      data: result.data,
+      shopId: result.normalized?.shop_id,
+      shopName: result.normalized?.shop_name,
+      catalogId: result.normalized?.catalog_id,
+      catalogName: result.normalized?.catalog_name,
+    };
   },
 
   remove: async ({ request, locals }) => {

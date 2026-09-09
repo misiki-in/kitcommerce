@@ -64,9 +64,6 @@
             </span>
             <span class="min-w-0 flex-1">
               <span class="block truncate text-sm font-medium">{connector.displayName}</span>
-              <span class="block truncate text-xs text-muted-foreground">
-                {connector.regions.slice(0, 3).join(", ")}
-              </span>
             </span>
             {#if connector.already}
               <span class="flex shrink-0 items-center gap-1.5 text-xs font-medium text-success">
@@ -145,9 +142,6 @@
                         >
                           in dev
                         </span>
-                      </span>
-                      <span class="block truncate text-xs text-muted-foreground">
-                        {connector.regions.slice(0, 3).join(", ")}
                       </span>
                     </span>
                     <span

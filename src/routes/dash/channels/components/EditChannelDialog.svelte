@@ -917,23 +917,55 @@
 
                 <!-- Step 3: Discover Policies -->
                 <div class="flex items-center justify-between border-t border-primary/20 pt-2.5 text-xs">
-                  <span class="text-[11px] text-muted-foreground">Re-discover business policies & locations:</span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={isDiscoveringCatalogs || !credValues["refresh_token"]}
-                    onclick={discoverEbayPolicies}
-                    class="gap-1 text-xs h-7"
-                  >
-                    {#if isDiscoveringCatalogs}
-                      <LoaderCircle class="size-3 animate-spin" />
-                    {:else}
-                      <RefreshCw class="size-3" />
-                    {/if}
-                    Discover Policies
-                  </Button>
+                  <span class="text-[11px] text-muted-foreground">Sync business policies & locations:</span>
+                  <div class="flex items-center gap-1.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={isDiscoveringCatalogs || !credValues["refresh_token"]}
+                      onclick={discoverEbayPolicies}
+                      class="gap-1 text-xs h-7"
+                    >
+                      {#if isDiscoveringCatalogs}
+                        <LoaderCircle class="size-3 animate-spin" />
+                      {:else}
+                        <RefreshCw class="size-3" />
+                      {/if}
+                      Sync Policies
+                    </Button>
+                  </div>
                 </div>
+
+                {#if discoveredEbayFulfillment.length > 0 || discoveredEbayReturns.length > 0 || discoveredEbayPayments.length > 0}
+                  <div class="rounded-lg border bg-background/80 p-3 space-y-2.5 text-xs mt-2">
+                    <div class="flex items-center justify-between">
+                      <span class="font-semibold text-[11px] text-foreground">Discovered eBay Policies</span>
+                      <span class="text-[10px] text-muted-foreground">Auto-assigned to listings</span>
+                    </div>
+
+                    <div class="grid gap-2 sm:grid-cols-3 text-[11px]">
+                      <div class="rounded border p-2 bg-muted/20">
+                        <span class="block font-medium text-muted-foreground">Fulfillment / Shipping</span>
+                        <span class="block truncate font-semibold text-foreground mt-0.5">
+                          {discoveredEbayFulfillment[0]?.name || "Auto-managed"}
+                        </span>
+                      </div>
+                      <div class="rounded border p-2 bg-muted/20">
+                        <span class="block font-medium text-muted-foreground">Return Policy</span>
+                        <span class="block truncate font-semibold text-foreground mt-0.5">
+                          {discoveredEbayReturns[0]?.name || "30-Day Returns"}
+                        </span>
+                      </div>
+                      <div class="rounded border p-2 bg-muted/20">
+                        <span class="block font-medium text-muted-foreground">Payment Policy</span>
+                        <span class="block truncate font-semibold text-foreground mt-0.5">
+                          {discoveredEbayPayments[0]?.name || "Managed Payments"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                {/if}
               </div>
             </div>
           {/if}
